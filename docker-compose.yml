@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  kv-storage:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kv-storage:latest
+    container_name: kv-storage
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - TOKEN=${TOKEN:-secret-token-change-me}
+      - DB_PATH=/data/kv_db
+      - BIND_ADDR=0.0.0.0:3000
+      - COMPRESSION_LEVEL=${COMPRESSION_LEVEL:-1}
+      - RUST_LOG=${RUST_LOG:-info}
+    volumes:
+      - kv-data:/data
+    # Distroless images have no shell, so healthcheck is disabled by default
+    # Uncomment below if you have curl/wget available on the host
+    # healthcheck:
+    #   test: ["CMD-SHELL", "curl -f http://localhost:3000/metrics || exit 1"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 5s
+
+volumes:
+  kv-data:
+    driver: local

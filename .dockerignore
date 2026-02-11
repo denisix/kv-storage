@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Rust artifacts
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Documentation
+*.md
+!README.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*.local
+
+# Database (local)
+kv_db/
+*.db
+
+# Logs
+*.log
+
+# Test data
+test_data/
