@@ -35,17 +35,20 @@ curl --http2-prior-knowledge http://localhost:3000/mykey \
 ## Docker
 
 ```bash
-# Build
-docker build -t kv-storage:latest .
-
-# Run (TOKEN is required)
+# Run the official image (TOKEN is required)
 docker run -d --name kv-storage -p 3000:3000 \
   -e TOKEN=your-secret-token \
   -v kv-data:/data \
-  kv-storage:latest
+  ghcr.io/denisix/kv-storage:latest
 
 # Or use docker compose
 TOKEN=your-secret-token docker compose up -d
+```
+
+To build locally instead:
+
+```bash
+docker build -t kv-storage:latest .
 ```
 
 ## API Reference
@@ -144,9 +147,9 @@ Exported metrics:
 | `TOKEN` | *required* | Authentication token |
 | `DB_PATH` | `./kv_db` | Database storage path |
 | `BIND_ADDR` | `0.0.0.0:3000` | Server bind address |
-| `COMPRESSION_LEVEL` | `1` | Zstd level (clamped to 1-3) |
+| `COMPRESSION_LEVEL` | `1` | Zstd level: 0 = off, 1-9 = compression |
 | `KV_CACHE_CAPACITY` | `1073741824` | Sled cache size in bytes (1GB) |
-| `KV_FLUSH_INTERVAL_MS` | `100` | Sled flush interval in ms |
+| `KV_FLUSH_INTERVAL_MS` | `1000` | Sled flush interval in ms |
 
 ## Development
 

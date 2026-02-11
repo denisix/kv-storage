@@ -9,12 +9,17 @@ pub struct Compressor {
 impl Compressor {
     pub fn new(level: i32) -> Self {
         Self {
-            level: level.clamp(1, 3), // Clamp to 1-3 for speed/compression balance
+            level: level.clamp(0, 9), // 0 = off, 1-9 = zstd levels
             min_compress_size: 512, // Compress data >= 512 bytes
         }
     }
 
     pub fn compress(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
+        // Level 0 = compression disabled
+        if self.level == 0 {
+            return Ok(data.to_vec());
+        }
+
         // Skip compression for very small data (overhead not worth it)
         if data.len() < self.min_compress_size {
             return Ok(data.to_vec());
@@ -45,7 +50,7 @@ impl Compressor {
 
     #[inline]
     pub fn should_compress(&self, size: usize) -> bool {
-        size >= self.min_compress_size
+        self.level > 0 && size >= self.min_compress_size
     }
 }
 

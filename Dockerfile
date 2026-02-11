@@ -31,7 +31,11 @@ RUN find src -name '*.rs' -exec touch {} +
 RUN cargo build --release
 
 # Stage 2: Minimal Alpine runtime (musl-linked binary needs musl)
-FROM alpine:3.21
+FROM alpine:3.23
+
+LABEL org.opencontainers.image.source="https://github.com/denisix/kv-storage"
+LABEL org.opencontainers.image.description="KV Storage: High-performance key-value storage system built in Rust with HTTP/2, content deduplication, atomic writes, and Zstd compression"
+LABEL org.opencontainers.image.licenses=MIT
 
 # curl for healthcheck (server is HTTP/2 only, wget doesn't support h2c)
 RUN apk add --no-cache curl
@@ -52,7 +56,7 @@ ENV DB_PATH=/data/kv_db \
     BIND_ADDR=0.0.0.0:3000 \
     COMPRESSION_LEVEL=1 \
     KV_CACHE_CAPACITY=1073741824 \
-    KV_FLUSH_INTERVAL_MS=100
+    KV_FLUSH_INTERVAL_MS=1000
 
 EXPOSE 3000
 

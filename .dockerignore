@@ -6,7 +6,9 @@ kv_db/
 tests/
 benches/
 clients/
+scripts/
 Makefile
 .dockerignore
 Dockerfile
 docker-compose.yml
+SUMMARY.md

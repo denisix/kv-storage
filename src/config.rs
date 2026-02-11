@@ -27,10 +27,13 @@ impl Config {
             .ok()
             .and_then(|s| parse_size(&s));
 
-        // Parse flush interval (in milliseconds)
-        let flush_interval_ms = env::var("KV_FLUSH_INTERVAL_MS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok());
+        // Parse flush interval (in milliseconds, default: 1000)
+        let flush_interval_ms = Some(
+            env::var("KV_FLUSH_INTERVAL_MS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(1000)
+        );
 
         Ok(Config {
             db_path,
@@ -106,7 +109,7 @@ mod tests {
         assert_eq!(config.bind_addr, "0.0.0.0:3000");
         assert_eq!(config.compression_level, 1);
         assert!(config.cache_capacity_bytes.is_none());
-        assert!(config.flush_interval_ms.is_none());
+        assert_eq!(config.flush_interval_ms, Some(1000));
     }
 
     #[test]
