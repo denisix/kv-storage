@@ -1,6 +1,6 @@
 {
   "name": "kv-storage-client",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Fast Node.js client for kv-storage HTTP/2 server",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
