@@ -1,21 +1,17 @@
 # kv-storage-client
 
-A modern, high-performance Node.js client for the [kv-storage](https://github.com/yourusername/kv-storage) HTTP/2 key-value storage server.
-
-# kv-storage-client
-
-A modern, high-performance Node.js client for the [kv-storage](https://github.com/yourusername/kv-storage) HTTP/2 key-value storage server.
+Node.js/TypeScript HTTP/2 client for the [kv-storage](https://github.com/denisix/kv-storage) server.
 
 ## Features
 
-- 🚀 **Native HTTP/2** - Uses Node.js built-in `http2` module for optimal performance
-- 📦 **Full TypeScript Support** - Fully typed for excellent developer experience
-- 🔐 **Authentication** - Secure token-based authentication
-- ⚡ **Fast Operations** - Optimized for high-throughput read/write workloads
-- 🔄 **Batch Operations** - Atomic multi-operation support
-- 📊 **Metrics** - Built-in Prometheus metrics support
-- 🔍 **Pagination** - Efficient key listing with pagination
-- 🎯 **Zero Runtime Dependencies** - Uses only Node.js built-in modules
+- **Native HTTP/2** - Uses Node.js built-in `node:http2` for h2c multiplexing
+- **Full TypeScript** - Typed interfaces for all operations
+- **Connection Pooling** - Persistent session with automatic reconnect and idle timeout
+- **Batch Operations** - Multiple ops in a single request
+- **Async Iteration** - `listAll()` generator for paginated key enumeration
+- **Zero Runtime Dependencies** - Only Node.js built-in modules
+
+Requires Node.js >= 18.
 
 ## Installation
 
@@ -34,100 +30,84 @@ const client = new KVStorage({
 });
 
 // Store a value
-await client.put('user:123', JSON.stringify({ name: 'John', age: 30 }));
+const { hash } = await client.put('user:123', JSON.stringify({ name: 'John' }));
+console.log(hash); // xxHash3-128 hex string
 
 // Retrieve a value
 const value = await client.get('user:123');
 if (value) {
-  const user = JSON.parse(value);
-  console.log(user.name); // "John"
+  console.log(JSON.parse(value));
 }
 
-// Clean up when done
+// Clean up
 client.close();
 ```
 
 ## API Reference
 
-### Constructor Options
+### Constructor
 
 ```typescript
-interface KVStorageOptions {
-  endpoint?: string;              // Server URL (default: http://localhost:3000)
-  token: string;                  // Authentication token (required)
-  timeout?: number;               // Request timeout in ms (default: 30000)
-  maxConcurrentStreams?: number;  // Max HTTP/2 concurrent streams (default: 100)
-  sessionTimeout?: number;        // Session idle timeout in ms (default: 60000)
-  rejectUnauthorized?: boolean;   // TLS verification (default: true)
-}
+const client = new KVStorage({
+  endpoint: 'http://localhost:3000', // Server URL (default)
+  token: 'secret',                   // Required
+  timeout: 30000,                    // Request timeout ms (default)
+  maxConcurrentStreams: 100,         // HTTP/2 streams (default)
+  sessionTimeout: 60000,            // Idle session timeout ms (default)
+  rejectUnauthorized: true,          // TLS verification (default)
+});
 ```
 
-### Methods
+### `put(key, value)` -> `PutResponse`
 
-#### `put(key, value)`
-
-Store a value with a key.
+Store a value. Accepts `string`, `Buffer`, or `Uint8Array`.
 
 ```typescript
-// Text value
-await client.put('my-key', 'my-value');
+const result = await client.put('my-key', 'my-value');
+// { hash: string, hash_algorithm: string, deduplicated: boolean }
 
-// Binary value (Buffer)
-const data = Buffer.from([0, 1, 2, 3]);
-await client.put('binary-key', data);
-
-// Returns: { hash: string, hash_algorithm: string, deduplicated: boolean }
+// Binary data
+await client.put('bin-key', Buffer.from([0, 1, 2, 3]));
 ```
 
-#### `get(key, encoding?)`
+### `get(key, encoding?)` -> `string | Buffer | null`
 
-Retrieve a value by key.
+Retrieve a value. Returns `null` if key doesn't exist.
 
 ```typescript
-// Get as text (UTF-8)
-const text = await client.get('my-key', 'utf-8');
-
-// Get as binary
-const binary = await client.get('binary-key', 'binary');
-
-// Returns: string | Buffer | null
+const text = await client.get('my-key');           // UTF-8 string
+const buf = await client.get('bin-key', 'binary'); // Buffer
 ```
 
-#### `delete(key)`
+### `delete(key)` -> `boolean`
 
-Delete a key.
+Delete a key. Returns `true` if deleted, `false` if not found.
 
 ```typescript
-const deleted = await client.delete('my-key');
-// Returns: boolean
+await client.delete('my-key');
 ```
 
-#### `head(key)`
+### `head(key)` -> `HeadInfo | null`
 
-Get metadata about a key without retrieving the value.
+Get metadata without the value body.
 
 ```typescript
 const info = await client.head('my-key');
-// Returns: { 'content-length': string, 'x-refs': string, 'x-content-sha256': string } | null
+// { 'content-length': string, 'x-refs': string, 'x-hash': string }
 ```
 
-#### `list(options?)`
+### `list(options?)` -> `ListResponse`
 
-List all keys with pagination.
+Paginated key listing.
 
 ```typescript
-// Get first 100 keys
-const result = await client.list();
-
-// Get next page
-const page2 = await client.list({ offset: 100, limit: 50 });
-
-// Returns: { keys: KeyInfo[], total: number }
+const { keys, total } = await client.list({ offset: 0, limit: 50 });
+// keys: [{ key, size, hash, hash_algorithm, refs, created_at }]
 ```
 
-#### `listAll(pageSize?)`
+### `listAll(pageSize?)` -> `AsyncGenerator<KeyInfo[]>`
 
-Async iterator for listing all keys with automatic pagination.
+Async iterator for automatic pagination.
 
 ```typescript
 for await (const keys of client.listAll(100)) {
@@ -137,130 +117,62 @@ for await (const keys of client.listAll(100)) {
 }
 ```
 
-#### `batch(operations)`
+### `batch(operations)` -> `BatchResponse`
 
-Execute multiple operations atomically.
+Multiple operations in a single request.
 
 ```typescript
-const results = await client.batch([
-  { op: 'put', key: 'user:1', value: '{"name":"John"}' },
-  { op: 'put', key: 'user:2', value: '{"name":"Jane"}' },
-  { op: 'get', key: 'user:1' },
-  { op: 'delete', key: 'old-key' }
+const { results } = await client.batch([
+  { op: 'put', key: 'k1', value: 'v1' },
+  { op: 'get', key: 'k1' },
+  { op: 'delete', key: 'old' }
 ]);
-
-// Returns: { results: BatchResult[] }
 ```
 
-#### `metrics()`
+Each result is a tagged object: `{ put: {...} }`, `{ get: {...} }`, `{ delete: {...} }`, or `{ error: {...} }`.
 
-Get Prometheus metrics from the server.
+### `metrics()` -> `string`
 
-```typescript
-const metrics = await client.metrics();
-// Returns: string (Prometheus text format)
-```
+Prometheus-format metrics text.
 
-#### `healthCheck()`
+### `healthCheck()` -> `boolean`
 
-Check if the server is accessible.
+Returns `true` if the server is reachable.
 
-```typescript
-const healthy = await client.healthCheck();
-// Returns: boolean
-```
+### `close()`
 
-#### `close()`
-
-Close the HTTP/2 session and cleanup resources.
-
-```typescript
-client.close();
-```
+Close the HTTP/2 session and release resources. Always call this when done.
 
 ## Advanced Usage
 
-### HTTP/2 Connection Pooling
-
-The client maintains a persistent HTTP/2 connection with configurable limits:
+### High-Throughput Writes
 
 ```typescript
 const client = new KVStorage({
-  endpoint: 'https://kv-storage.example.com',
+  endpoint: 'http://localhost:3000',
   token: process.env.KV_TOKEN,
-  maxConcurrentStreams: 200,  // Allow up to 200 concurrent requests
-  sessionTimeout: 120000,      // Keep session alive for 2 minutes idle
+  maxConcurrentStreams: 200,
 });
 
-// Client automatically handles session reuse
-const promises = [];
-for (let i = 0; i < 1000; i++) {
-  promises.push(client.put(`key:${i}`, `value:${i}`));
-}
+// HTTP/2 multiplexing allows parallel requests on one connection
+const promises = Array.from({ length: 1000 }, (_, i) =>
+  client.put(`key:${i}`, `value:${i}`)
+);
 await Promise.all(promises);
 
-// Clean up when done
 client.close();
 ```
 
-### Binary Data
+### Binary Files
 
 ```typescript
-import { readFile } from 'fs/promises';
+import { readFile, writeFile } from 'fs/promises';
 
-// Store binary data
-const imageBuffer = await readFile('image.png');
-await client.put('images:logo', imageBuffer);
+await client.put('images:logo', await readFile('logo.png'));
 
-// Retrieve binary data
-const retrieved = await client.get('images:logo', 'binary');
-if (Buffer.isBuffer(retrieved)) {
-  await writeFile('logo.png', retrieved);
-}
-```
-
-### Batch Operations
-
-```typescript
-// Atomic multi-operation
-const results = await client.batch([
-  { op: 'put', key: 'cache:user:1', value: userData },
-  { op: 'put', key: 'cache:user:2', value: userData },
-  { op: 'put', key: 'cache:user:3', value: userData },
-]);
-
-for (const result of results.results) {
-  if (result.error) {
-    console.error(`Failed: ${result.error}`);
-  } else {
-    console.log(`${result.op} on ${result.key} succeeded`);
-  }
-}
-```
-
-### Pagination
-
-```typescript
-// Process all keys efficiently
-let offset = 0;
-const limit = 100;
-
-while (true) {
-  const { keys, total } = await client.list({ offset, limit });
-
-  for (const key of keys) {
-    await processKey(key);
-  }
-
-  if (keys.length < limit) break;
-  offset += limit;
-}
-
-// Or use the iterator
-for await (const keys of client.listAll(100)) {
-  for (const key of keys) {
-    await processKey(key);
-  }
+const data = await client.get('images:logo', 'binary');
+if (Buffer.isBuffer(data)) {
+  await writeFile('logo-copy.png', data);
 }
 ```
 
@@ -268,54 +180,34 @@ for await (const keys of client.listAll(100)) {
 
 ```typescript
 try {
-  await client.put('my-key', 'my-value');
+  await client.put('my-key', 'value');
 } catch (error) {
-  if (error instanceof Error) {
-    if (error.message.includes('Unauthorized')) {
-      console.error('Invalid token');
-    } else if (error.message.includes('timeout')) {
-      console.error('Request timed out');
-    } else if (error.message.includes('ECONNREFUSED')) {
-      console.error('Cannot connect to server');
-    } else {
-      console.error('Error:', error.message);
-    }
+  if (error.message.includes('Unauthorized')) {
+    // Invalid token
+  } else if (error.message.includes('timeout')) {
+    // Request timed out
+  } else if (error.message.includes('ECONNREFUSED')) {
+    // Server unreachable
   }
 }
 ```
 
-## HTTP/2 Benefits
-
-Using the native `http2` module provides:
-
-- **Multiplexing** - Multiple concurrent requests over a single connection
-- **Header Compression** - Reduced bandwidth usage
-- **Server Push** - Future support for server-sent updates
-- **Stream Priorities** - Priority-based request handling
-- **Connection Reuse** - Persistent connections with automatic management
-
-## Performance Tips
-
-1. **Increase `maxConcurrentStreams`** for high-throughput scenarios
-2. **Use batch operations** - Combine multiple operations into a single request
-3. **Set appropriate `sessionTimeout`** - Balance between resource usage and latency
-4. **Call `close()` when done** - Properly cleanup HTTP/2 sessions
-
-## Testing
+## Development
 
 ```bash
-# Start the kv-storage server
-TOKEN=test-token cargo run
+# Start the kv-storage server (HTTP/2 only)
+TOKEN=test-token cargo run --release
 
-# Run tests in another terminal
+# Build
+npm run build
+
+# Run tests (requires running server)
 npm test
+
+# Run example
+npm run example
 ```
 
 ## License
 
 MIT
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
