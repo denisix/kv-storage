@@ -58,7 +58,7 @@ pub async fn handle_put(
         }
 
         // Create key metadata pointing to existing object
-        let meta = crate::storage::KeyMeta::new(hash.clone(), size);
+        let meta = crate::storage::KeyMeta::new(hash, size);
         let meta_bytes = bincode::serialize(&meta)?;
         keys_tree.insert(key.as_bytes(), meta_bytes)?;
 

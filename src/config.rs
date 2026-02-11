@@ -23,12 +23,12 @@ impl Config {
             .unwrap_or(1);
 
         // Parse cache capacity (supports: 256M, 1G, 512000000, etc.)
-        let cache_capacity_bytes = env::var("CACHE_CAPACITY")
+        let cache_capacity_bytes = env::var("KV_CACHE_CAPACITY")
             .ok()
             .and_then(|s| parse_size(&s));
 
         // Parse flush interval (in milliseconds)
-        let flush_interval_ms = env::var("FLUSH_INTERVAL_MS")
+        let flush_interval_ms = env::var("KV_FLUSH_INTERVAL_MS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok());
 
@@ -94,8 +94,8 @@ mod tests {
     fn test_config_from_env_default() {
         // Clean up all env vars first
         env::remove_var("COMPRESSION_LEVEL");
-        env::remove_var("CACHE_CAPACITY");
-        env::remove_var("FLUSH_INTERVAL_MS");
+        env::remove_var("KV_CACHE_CAPACITY");
+        env::remove_var("KV_FLUSH_INTERVAL_MS");
         // Set required env vars only
         env::set_var("TOKEN", "test-token");
 
@@ -114,23 +114,23 @@ mod tests {
     fn test_config_cache_capacity() {
         // Clean up first
         env::remove_var("COMPRESSION_LEVEL");
-        env::remove_var("FLUSH_INTERVAL_MS");
+        env::remove_var("KV_FLUSH_INTERVAL_MS");
         env::set_var("TOKEN", "test-token");
 
-        env::set_var("CACHE_CAPACITY", "256M");
+        env::set_var("KV_CACHE_CAPACITY", "256M");
         let config = Config::from_env().unwrap();
         assert_eq!(config.cache_capacity_bytes, Some(256 * 1024 * 1024));
 
-        env::set_var("CACHE_CAPACITY", "1G");
+        env::set_var("KV_CACHE_CAPACITY", "1G");
         let config = Config::from_env().unwrap();
         assert_eq!(config.cache_capacity_bytes, Some(1024 * 1024 * 1024));
 
-        env::set_var("CACHE_CAPACITY", "512000000");
+        env::set_var("KV_CACHE_CAPACITY", "512000000");
         let config = Config::from_env().unwrap();
         assert_eq!(config.cache_capacity_bytes, Some(512000000));
 
         // Clean up
-        env::remove_var("CACHE_CAPACITY");
+        env::remove_var("KV_CACHE_CAPACITY");
     }
 
     #[test]
@@ -138,27 +138,27 @@ mod tests {
     fn test_config_flush_interval() {
         // Clean up first
         env::remove_var("COMPRESSION_LEVEL");
-        env::remove_var("CACHE_CAPACITY");
+        env::remove_var("KV_CACHE_CAPACITY");
         env::set_var("TOKEN", "test-token");
 
-        env::set_var("FLUSH_INTERVAL_MS", "5000");
+        env::set_var("KV_FLUSH_INTERVAL_MS", "5000");
         let config = Config::from_env().unwrap();
         assert_eq!(config.flush_interval_ms, Some(5000));
 
-        env::set_var("FLUSH_INTERVAL_MS", "100");
+        env::set_var("KV_FLUSH_INTERVAL_MS", "100");
         let config = Config::from_env().unwrap();
         assert_eq!(config.flush_interval_ms, Some(100));
 
         // Clean up
-        env::remove_var("FLUSH_INTERVAL_MS");
+        env::remove_var("KV_FLUSH_INTERVAL_MS");
     }
 
     #[test]
     #[serial]
     fn test_config_compression_level() {
         // Clean up first
-        env::remove_var("CACHE_CAPACITY");
-        env::remove_var("FLUSH_INTERVAL_MS");
+        env::remove_var("KV_CACHE_CAPACITY");
+        env::remove_var("KV_FLUSH_INTERVAL_MS");
         env::set_var("TOKEN", "test-token");
 
         env::set_var("COMPRESSION_LEVEL", "3");
@@ -178,8 +178,8 @@ mod tests {
     fn test_config_missing_token() {
         // Clean up all optional vars first
         env::remove_var("COMPRESSION_LEVEL");
-        env::remove_var("CACHE_CAPACITY");
-        env::remove_var("FLUSH_INTERVAL_MS");
+        env::remove_var("KV_CACHE_CAPACITY");
+        env::remove_var("KV_FLUSH_INTERVAL_MS");
         env::remove_var("TOKEN");
 
         let result = Config::from_env();
@@ -191,8 +191,8 @@ mod tests {
     #[serial]
     fn test_config_invalid_compression() {
         // Clean up first
-        env::remove_var("CACHE_CAPACITY");
-        env::remove_var("FLUSH_INTERVAL_MS");
+        env::remove_var("KV_CACHE_CAPACITY");
+        env::remove_var("KV_FLUSH_INTERVAL_MS");
         env::set_var("TOKEN", "test-token");
 
         env::set_var("COMPRESSION_LEVEL", "invalid");

@@ -9,7 +9,7 @@ pub struct Compressor {
 impl Compressor {
     pub fn new(level: i32) -> Self {
         Self {
-            level: level.max(1).min(3), // Clamp to 1-3 for speed/compression balance
+            level: level.clamp(1, 3), // Clamp to 1-3 for speed/compression balance
             min_compress_size: 512, // Compress data >= 512 bytes
         }
     }

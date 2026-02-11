@@ -23,7 +23,6 @@ const MAX_KEY_LENGTH: usize = 256 * 1024;
 ///
 /// # Errors
 /// Returns `Error::InvalidRequest` if validation fails.
-#[must_use]
 pub fn validate_key(key: &str) -> Result<(), Error> {
     // Check empty
     if key.is_empty() {

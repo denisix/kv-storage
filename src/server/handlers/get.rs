@@ -18,7 +18,7 @@ pub async fn handle_get(
     // Get object data using hash bytes
     let hash_bytes = meta.hash.as_bytes();
     let objects_tree = handler.db().objects_tree();
-    let compressed = objects_tree.get(&hash_bytes)?
+    let compressed = objects_tree.get(hash_bytes)?
         .ok_or_else(|| Error::NotFound("Object data not found".to_string()))?;
 
     // Decompress - use blocking task only for larger payloads

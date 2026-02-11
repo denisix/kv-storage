@@ -48,9 +48,9 @@ impl KeyStore {
     }
 
     pub fn get(&self, key: &str) -> Result<Option<KeyMeta>, Error> {
-        Ok(self.tree.get(key.as_bytes())?
+        self.tree.get(key.as_bytes())?
             .map(|ivec| self.deserialize_meta(&ivec))
-            .transpose()?)
+            .transpose()
     }
 
     pub fn set(&self, key: &str, meta: &KeyMeta) -> Result<(), Error> {

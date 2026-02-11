@@ -134,7 +134,7 @@ docker-run:
 	@echo "Running Docker container..."
 	docker run -d --name kv-storage -p 3000:3000 \
 		-e TOKEN=docker-token \
-		-v kv-data:/app/data \
+		-v kv-data:/data \
 		kv-storage:latest
 
 docker-stop:

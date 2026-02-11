@@ -209,7 +209,7 @@ fn test_head_request() {
         .unwrap();
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
-    assert!(response.headers().contains_key("x-content-sha256"));
+    assert!(response.headers().contains_key("x-hash"));
     assert!(response.headers().contains_key("content-length"));
     assert!(response.headers().contains_key("x-created-at"));
     assert!(response.headers().contains_key("x-refs"));

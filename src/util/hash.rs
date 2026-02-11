@@ -31,7 +31,7 @@ impl Hash {
 
     #[inline]
     pub fn to_hex_string(&self) -> String {
-        hex::encode(&self.0)
+        hex::encode(self.0)
     }
 
     #[inline]
@@ -39,9 +39,6 @@ impl Hash {
         self.0.to_vec()
     }
 }
-
-/// Legacy type alias for backwards compatibility
-pub type LegacyHash = [u8; 16];
 
 pub fn hash_bytes(data: &[u8]) -> Hash {
     Hash::compute(data)
