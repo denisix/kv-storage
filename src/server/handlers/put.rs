@@ -47,39 +47,25 @@ pub async fn handle_put(
     let objects_tree = handler.db().objects_tree();
     let object_exists = objects_tree.contains_key(hash_bytes)?;
 
-    if object_exists {
-        // Object already exists - just add key mapping
-        let keys_tree = handler.db().keys_tree();
-        let refs_tree = handler.db().refs_tree();
-
-        // Check if key already exists
-        if keys_tree.contains_key(key.as_bytes())? {
-            return Err(Error::Conflict(format!("Key '{}' already exists", key)));
-        }
-
-        // Create key metadata pointing to existing object
-        let meta = crate::storage::KeyMeta::new(hash, size);
-        let meta_bytes = bincode::serialize(&meta)?;
-        keys_tree.insert(key.as_bytes(), meta_bytes)?;
-
-        // Add ref
-        let mut ref_key = hash_bytes.to_vec();
-        ref_key.extend_from_slice(key.as_bytes());
-        refs_tree.insert(&ref_key, b"1")?;
-
-        handler.metrics().inc_dedup_hits();
-        handler.metrics().inc_puts();
-
-        return build_dedup_response(StatusCode::OK, &hash, true);
-    }
-
-    // Store new object atomically
+    // Store object atomically (create or update)
     let tx_manager = crate::storage::TransactionManager::new(handler.db().clone());
-    tx_manager.put_key_atomic(key, &compressed, &hash, size)?;
+    let old_hash = tx_manager.update_key_atomic(key, &compressed, &hash, size)?;
 
     handler.metrics().inc_puts();
 
-    build_dedup_response(StatusCode::CREATED, &hash, false)
+    // Return 200 OK if key was updated, 201 CREATED if new
+    let status = if old_hash.is_some() {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+
+    let deduplicated = object_exists;
+    if deduplicated {
+        handler.metrics().inc_dedup_hits();
+    }
+
+    build_dedup_response(status, &hash, deduplicated)
 }
 
 /// Build a PUT response with hash headers

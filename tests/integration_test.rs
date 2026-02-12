@@ -65,13 +65,19 @@ fn test_put_creates_new_key() {
 }
 
 #[test]
-fn test_put_existing_key_fails() {
+fn test_put_existing_key_updates() {
     let data = b"first put";
     make_auth_request("PUT", "/test_put_conflict", Some(data)).unwrap();
 
-    // Second put should fail
-    let (_, status) = make_auth_request("PUT", "/test_put_conflict", Some(b"second put")).unwrap();
-    assert_eq!(status, reqwest::StatusCode::CONFLICT);
+    // Second put should update and return 200 OK
+    let (result, status) = make_auth_request("PUT", "/test_put_conflict", Some(b"second put")).unwrap();
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(!result.is_empty()); // Should return hash
+
+    // Verify the value was updated
+    let (result, status) = make_auth_request("GET", "/test_put_conflict", None).unwrap();
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(result, "second put");
 
     // Cleanup
     make_auth_request("DELETE", "/test_put_conflict", None).unwrap();
@@ -155,8 +161,9 @@ fn test_deduplication_same_data() {
     assert_eq!(status1, reqwest::StatusCode::CREATED);
 
     // Second put with different key but same data
+    // Since it's a new key, should return 201 CREATED (even though content is deduplicated)
     let (result2, status2) = make_auth_request("PUT", "/dedup_key2", Some(data)).unwrap();
-    assert_eq!(status2, reqwest::StatusCode::OK); // 200 OK, not 201 Created
+    assert_eq!(status2, reqwest::StatusCode::CREATED);
 
     // Both should return the same hash
     assert_eq!(result1.trim(), result2.trim());
@@ -351,13 +358,13 @@ fn test_batch_mixed_operations() {
 }
 
 #[test]
-fn test_batch_error_handling() {
-    // Try to create duplicate key
-    make_auth_request("PUT", "/batch_error_key", Some(b"first")).unwrap();
+fn test_batch_update_key() {
+    // Test that batch PUT can update existing keys
+    make_auth_request("PUT", "/batch_update_key", Some(b"first")).unwrap();
 
     let batch_ops = r#"[
-        {"op": "put", "key": "batch_error_key", "value": "second"},
-        {"op": "put", "key": "batch_error_new", "value": "new"}
+        {"op": "put", "key": "batch_update_key", "value": "second"},
+        {"op": "put", "key": "batch_update_new", "value": "new"}
     ]"#;
 
     let (base_url, token) = get_config();
@@ -373,13 +380,18 @@ fn test_batch_error_handling() {
     let json: serde_json::Value = response.json().unwrap();
     let results = json["results"].as_array().unwrap();
 
-    // First should error, second should succeed
-    assert!(results[0]["error"].is_string());
+    // First should update (200 OK), second should create (201 CREATED)
+    // Both should succeed with hash
+    assert!(results[0]["hash"].is_string());
     assert!(results[1]["hash"].is_string());
 
+    // Verify the value was updated
+    let (result, _) = make_auth_request("GET", "/batch_update_key", None).unwrap();
+    assert_eq!(result, "second");
+
     // Cleanup
-    make_auth_request("DELETE", "/batch_error_key", None).unwrap();
-    make_auth_request("DELETE", "/batch_error_new", None).unwrap();
+    make_auth_request("DELETE", "/batch_update_key", None).unwrap();
+    make_auth_request("DELETE", "/batch_update_new", None).unwrap();
 }
 
 // ========== Authentication Tests ==========

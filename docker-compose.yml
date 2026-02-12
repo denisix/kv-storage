@@ -9,7 +9,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - TOKEN=${TOKEN:?TOKEN must be set}
+      - TOKEN=${TOKEN:-change-me}
       - DB_PATH=/data/kv_db
       - BIND_ADDR=0.0.0.0:3000
       - COMPRESSION_LEVEL=${COMPRESSION_LEVEL:-1}

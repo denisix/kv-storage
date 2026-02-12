@@ -176,6 +176,40 @@ async function main() {
     client.close();
   });
 
+  // Test UPDATE (PUT existing key)
+  await runTest('PUT updates existing key', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 5000,
+    });
+
+    await ensureClean(client, ['test:update']);
+
+    const result1 = await client.put('test:update', 'first value');
+    if (typeof result1.hash !== 'string') {
+      throw new Error('Invalid hash result on first put');
+    }
+
+    const value1 = await client.get('test:update');
+    if (value1 !== 'first value') {
+      throw new Error(`Expected "first value" but got "${value1}"`);
+    }
+
+    const result2 = await client.put('test:update', 'second value');
+    if (typeof result2.hash !== 'string') {
+      throw new Error('Invalid hash result on second put');
+    }
+
+    const value2 = await client.get('test:update');
+    if (value2 !== 'second value') {
+      throw new Error(`Expected "second value" but got "${value2}"`);
+    }
+
+    await cleanup(client, ['test:update']);
+    client.close();
+  });
+
   // Test BATCH
   await runTest('BATCH operations', async () => {
     const client = new KVStorage({

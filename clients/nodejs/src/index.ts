@@ -6,7 +6,7 @@
 
 import http2 from 'node:http2';
 import { URL } from 'node:url';
-import type { ClientSessionOptions, IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http2';
+import type { ClientSessionOptions, SecureClientSessionOptions, IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http2';
 
 interface PutResponse {
   hash: string;
@@ -95,6 +95,7 @@ class HTTP2Session {
   private url: URL;
   private lastUsed: number;
   private sessionTimeout: number;
+  private idleTimer: ReturnType<typeof setInterval>;
 
   constructor(
     authority: string,
@@ -109,24 +110,28 @@ class HTTP2Session {
     this.lastUsed = Date.now();
 
     const isHttps = this.url.protocol === 'https:';
-    const clientOptions: ClientSessionOptions = {};
 
-    if (isHttps && options.rejectUnauthorized !== undefined) {
-      (clientOptions as any).rejectUnauthorized = options.rejectUnauthorized;
+    if (isHttps) {
+      const tlsOptions: SecureClientSessionOptions = {};
+      if (options.rejectUnauthorized !== undefined) {
+        tlsOptions.rejectUnauthorized = options.rejectUnauthorized;
+      }
+      this.client = http2.connect(authority, tlsOptions);
+    } else {
+      this.client = http2.connect(authority);
     }
 
-    this.client = http2.connect(authority, clientOptions);
     this.client.on('error', (_err: Error) => {
       // Session error - will be handled at request level
     });
 
     // Set up timeout to close idle sessions
-    const idleCheck = setInterval(() => {
+    this.idleTimer = setInterval(() => {
       if (Date.now() - this.lastUsed > this.sessionTimeout) {
         this.close();
-        clearInterval(idleCheck);
       }
     }, this.sessionTimeout / 2);
+    this.idleTimer.unref();
   }
 
   request(
@@ -190,6 +195,7 @@ class HTTP2Session {
   }
 
   close(): void {
+    clearInterval(this.idleTimer);
     this.client.destroy();
   }
 
@@ -284,15 +290,7 @@ export class KVStorage {
       }
 
       if (result.statusCode >= 400) {
-        let text = result.body.toString('utf-8');
-        // Workaround for HTTP/2 client bug where first byte of key is lost
-        // Pattern: "Key 'est:delete' not found" -> "Key 'test:delete' not found"
-        text = text.replace(/Key 'est:/g, "Key 'test:");
-        text = text.replace(/Key 'inary/g, "Key 'binary");
-        text = text.replace(/Key 'atch:/g, "Key 'batch:");
-        text = text.replace(/Key 'ist:/g, "Key 'list:");
-        text = text.replace(/Key 'ut-get/g, "Key 'put-get");
-        text = text.replace(/Key 'head/g, "Key 'test:head");
+        const text = result.body.toString('utf-8');
         throw new Error(`Server error (${result.statusCode}): ${text}`);
       }
 
@@ -324,7 +322,7 @@ export class KVStorage {
         ? Buffer.from(value, 'utf-8')
         : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
 
-    const result = await this.request(key.toString(), {
+    const result = await this.request(`/${key}`, {
       method: 'PUT',
       body,
       headers: {
@@ -365,7 +363,7 @@ export class KVStorage {
     key: string,
     encoding: 'utf-8' | 'binary' = 'utf-8'
   ): Promise<string | Buffer | null> {
-    const result = await this.request(key.toString(), {
+    const result = await this.request(`/${key}`, {
       method: 'GET',
       throwOnNotFound: false,
     });
@@ -393,7 +391,7 @@ export class KVStorage {
    * ```
    */
   async delete(key: string): Promise<boolean> {
-    const result = await this.request(key.toString(), {
+    const result = await this.request(`/${key}`, {
       method: 'DELETE',
       throwOnNotFound: false,
     });
@@ -417,7 +415,7 @@ export class KVStorage {
    * ```
    */
   async head(key: string): Promise<HeadInfo | null> {
-    const result = await this.request(key.toString(), {
+    const result = await this.request(`/${key}`, {
       method: 'HEAD',
       throwOnNotFound: false,
     });

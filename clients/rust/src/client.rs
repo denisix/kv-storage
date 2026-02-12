@@ -207,8 +207,9 @@ impl Client {
         let mut headers = HashMap::new();
         headers.insert("content-type".to_string(), "application/octet-stream".to_string());
 
+        let path = format!("/{}", key);
         let response = self
-            .request(key, &hyper::Method::PUT, Some(Bytes::copy_from_slice(value)), Some(headers))
+            .request(&path, &hyper::Method::PUT, Some(Bytes::copy_from_slice(value)), Some(headers))
             .await?;
 
         let body_bytes = Self::read_body_to_bytes(response.into_body()).await?;
@@ -261,7 +262,8 @@ impl Client {
     /// # }
     /// ```
     pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        match self.request(key, &hyper::Method::GET, None, None).await {
+        let path = format!("/{}", key);
+        match self.request(&path, &hyper::Method::GET, None, None).await {
             Ok(response) => {
                 let body_bytes = Self::read_body_to_bytes(response.into_body()).await?;
                 Ok(Some(body_bytes))
@@ -318,7 +320,8 @@ impl Client {
     /// # }
     /// ```
     pub async fn delete(&self, key: &str) -> Result<bool> {
-        match self.request(key, &hyper::Method::DELETE, None, None).await {
+        let path = format!("/{}", key);
+        match self.request(&path, &hyper::Method::DELETE, None, None).await {
             Ok(_) => Ok(true),
             Err(Error::NotFound(_)) => Ok(false),
             Err(e) => Err(e),
@@ -346,7 +349,8 @@ impl Client {
     /// # }
     /// ```
     pub async fn head(&self, key: &str) -> Result<Option<HeadInfo>> {
-        match self.request(key, &hyper::Method::HEAD, None, None).await {
+        let path = format!("/{}", key);
+        match self.request(&path, &hyper::Method::HEAD, None, None).await {
             Ok(response) => Ok(HeadInfo::from_headers(response.headers())),
             Err(Error::NotFound(_)) => Ok(None),
             Err(e) => Err(e),

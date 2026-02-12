@@ -1,6 +1,6 @@
 {
   "name": "kv-storage-client",
-  "version": "0.0.2",
+  "version": "0.0.5",
   "description": "Fast Node.js client for kv-storage HTTP/2 server",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -44,8 +44,10 @@
   ],
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "engines": {
