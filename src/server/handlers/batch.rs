@@ -104,29 +104,18 @@ pub async fn handle_batch(
         let result = match op {
             BatchOp::Put { key, value } => {
                 let value_bytes = value.into_bytes();
-
-                // Compute hash using xxHash3-128
                 let hash = Hash::compute(&value_bytes);
                 let hash_str = hash.to_hex_string();
-
-                // Compress
                 let compressed = handler.compressor().compress(&value_bytes)?;
                 let size = value_bytes.len() as u64;
 
-                // Store
-                match handler.db().keys_tree().contains_key(key.as_bytes()) {
-                    Ok(true) => {
-                        BatchResult::Error { key, error: "Key already exists".to_string() }
-                    }
-                    Ok(false) => {
-                        let tx_manager = crate::storage::TransactionManager::new(handler.db().clone());
-                        match tx_manager.put_key_atomic(&key, &compressed, &hash, size) {
-                            Ok(is_new) => {
-                                handler.metrics().inc_puts();
-                                BatchResult::Put { key, hash: hash_str, created: is_new }
-                            }
-                            Err(e) => BatchResult::Error { key, error: e.to_string() }
-                        }
+                // Store or update using atomic transaction
+                let tx_manager = crate::storage::TransactionManager::new(handler.db().clone());
+                match tx_manager.update_key_atomic(&key, &compressed, &hash, size) {
+                    Ok(old_hash) => {
+                        handler.metrics().inc_puts();
+                        let created = old_hash.is_none();
+                        BatchResult::Put { key, hash: hash_str, created }
                     }
                     Err(e) => BatchResult::Error { key, error: e.to_string() }
                 }

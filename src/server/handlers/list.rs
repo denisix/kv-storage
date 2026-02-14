@@ -12,7 +12,7 @@ struct KeyInfo {
     size: u64,
     hash: String,
     hash_algorithm: String,
-    refs: u32,
+    refs: u64,
     created_at: u64,
 }
 

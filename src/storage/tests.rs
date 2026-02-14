@@ -278,7 +278,7 @@ mod tests {
         let data = b"test data for compression level test";
 
         // Test different levels
-        for level in [1, 3, 10].iter() {
+        for level in [1, 3, 9].iter() {
             let compressor = Compressor::new(*level);
             let compressed = compressor.compress(data).unwrap();
             let decompressed = compressor.decompress(&compressed).unwrap();

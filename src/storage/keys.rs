@@ -8,7 +8,7 @@ use std::ops::Deref;
 pub struct KeyMeta {
     pub hash: Hash,
     pub size: u64,
-    pub refs: u32,
+    pub refs: u64,
     pub created_at: u64,
 }
 
@@ -107,9 +107,9 @@ impl KeyStore {
     pub fn update_ref_count(&self, key: &str, delta: i32) -> Result<Option<KeyMeta>, Error> {
         if let Some(mut meta) = self.get(key)? {
             if delta > 0 {
-                meta.refs = meta.refs.saturating_add(delta as u32);
+                meta.refs = meta.refs.saturating_add(delta as u64);
             } else {
-                let new_refs = meta.refs.saturating_sub((-delta) as u32);
+                let new_refs = meta.refs.saturating_sub((-delta) as u64);
                 meta.refs = new_refs;
             }
             self.set(key, &meta)?;
