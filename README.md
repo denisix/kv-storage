@@ -51,6 +51,46 @@ To build locally instead:
 docker build -t kv-storage:latest .
 ```
 
+## Key Names
+
+Keys can be any valid URI path. The server stores the key exactly as it appears in the URI (no percent-decoding). Any UTF-8 string can be used as a key through the client libraries, which handle percent-encoding automatically for HTTP transport.
+
+```bash
+# Simple key
+curl --http2-prior-knowledge -X PUT http://localhost:3000/mykey ...
+
+# Key with slashes, dots, colons
+curl --http2-prior-knowledge -X PUT http://localhost:3000/path/to/file.txt ...
+curl --http2-prior-knowledge -X PUT http://localhost:3000/user:123 ...
+
+# Key with spaces (percent-encoded as %20)
+curl --http2-prior-knowledge -X PUT http://localhost:3000/my%20key ...
+
+# Key with special characters
+curl --http2-prior-knowledge -X PUT http://localhost:3000/key%23with%23hash ...
+```
+
+When using the client libraries, encoding is handled transparently:
+
+```typescript
+// Node.js — spaces, unicode, etc. are encoded automatically
+await client.put('my key', 'value');
+await client.put('path/to/file.txt', data);
+await client.put('ключ', data);
+```
+
+```rust
+// Rust — same automatic encoding
+client.put("my key", b"value").await?;
+client.put("path/to/file.txt", &data).await?;
+client.put("ключ", &data).await?;
+```
+
+Key constraints:
+- Cannot be empty
+- Max 256 KB
+- No control characters (except tab)
+
 ## API Reference
 
 All endpoints require `Authorization: Bearer <TOKEN>` and HTTP/2 prior knowledge (`--http2-prior-knowledge` with curl).
@@ -155,7 +195,7 @@ Exported metrics:
 
 ```bash
 make build          # Debug build
-make test           # Unit tests (41 tests)
+make test           # Unit tests (46 tests)
 make test-integration  # Integration tests (requires running server)
 make clippy         # Lint
 make bench          # Criterion benchmarks
@@ -175,8 +215,8 @@ Deduplication: multiple keys can point to the same object hash. Objects are garb
 
 ## Client Libraries
 
-- **Rust** - `clients/rust/` - Async HTTP/2 client with full API coverage
-- **Node.js** - `clients/nodejs/` - TypeScript/JavaScript HTTP/2 client
+- **Rust** - `clients/rust/` - Async HTTP/2 client with full API coverage and automatic key encoding
+- **Node.js** - `clients/nodejs/` - TypeScript/JavaScript HTTP/2 client with automatic key encoding
 
 ## License
 

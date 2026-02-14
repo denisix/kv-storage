@@ -46,31 +46,62 @@ pub struct ListResponse {
 pub enum BatchOp {
     /// Store a value
     #[serde(rename = "put")]
-    Put { key: String, value: String },
+    Put {
+        /// The key to store
+        key: String,
+        /// The value to store
+        value: String,
+    },
     /// Retrieve a value
     #[serde(rename = "get")]
-    Get { key: String },
+    Get {
+        /// The key to retrieve
+        key: String,
+    },
     /// Delete a key
     #[serde(rename = "delete")]
-    Delete { key: String },
+    Delete {
+        /// The key to delete
+        key: String,
+    },
 }
 
 /// Result of a single batch operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(rename_all = "lowercase")]
 pub enum BatchResult {
     /// Successful PUT operation
-    Put { key: String, hash: String, created: bool },
+    Put {
+        /// The key that was stored
+        key: String,
+        /// Hash of the stored content
+        hash: String,
+        /// Whether a new object was created
+        created: bool,
+    },
     /// Successful GET operation
     Get {
+        /// The key that was retrieved
         key: String,
+        /// The value, if found
         value: Option<String>,
+        /// Whether the key was found
         found: bool,
     },
     /// Successful DELETE operation
-    Delete { key: String, deleted: bool },
+    Delete {
+        /// The key that was deleted
+        key: String,
+        /// Whether the key was actually deleted
+        deleted: bool,
+    },
     /// Failed operation
-    Error { key: String, error: String },
+    Error {
+        /// The key that caused the error
+        key: String,
+        /// Error message
+        error: String,
+    },
 }
 
 /// Response from a batch request

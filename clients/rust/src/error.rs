@@ -20,7 +20,12 @@ pub enum Error {
 
     /// Server returned an error
     #[error("Server error (status {status}): {message}")]
-    ServerError { status: u16, message: String },
+    ServerError {
+        /// HTTP status code
+        status: u16,
+        /// Error message from the server
+        message: String,
+    },
 
     /// Network or connection error
     #[error("Connection error: {0}")]

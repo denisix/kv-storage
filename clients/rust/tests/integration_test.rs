@@ -8,6 +8,8 @@
 use kv_storage_client::{Client, BatchOp};
 use std::env;
 
+// ========== Special Character Key Tests ==========
+
 fn get_client() -> Client {
     let endpoint = env::var("TEST_ENDPOINT").unwrap_or_else(|_| "http://localhost:3000".to_string());
     let token = env::var("TEST_TOKEN").unwrap_or_else(|_| "test-token".to_string());
@@ -200,4 +202,107 @@ async fn test_batch_operations() {
 
     // Cleanup
     cleanup(&client, &[&key1, &key2]).await;
+}
+
+#[tokio::test]
+async fn test_keys_with_spaces() {
+    let client = get_client();
+    let keys = [
+        "rust_test key with spaces",
+        "rust_test hello world",
+        "rust_test path/to/my file.txt",
+    ];
+
+    for key in &keys {
+        cleanup(&client, &[key]).await;
+
+        let data = format!("data for {}", key);
+        let result = client.put(key, data.as_bytes()).await.unwrap();
+        assert!(!result.hash.is_empty(), "PUT failed for key: {}", key);
+
+        let value = client.get(key).await.unwrap();
+        assert_eq!(value, Some(data.as_bytes().to_vec()), "GET mismatch for key: {}", key);
+
+        let deleted = client.delete(key).await.unwrap();
+        assert!(deleted, "DELETE failed for key: {}", key);
+    }
+}
+
+#[tokio::test]
+async fn test_keys_with_special_characters() {
+    let client = get_client();
+    let keys = [
+        "rust_test:colons:here",
+        "rust_test.dots.here",
+        "rust_test-dashes-here",
+        "rust_test_underscores_here",
+        "rust_test/slashes/here",
+        "rust_test!exclaim",
+        "rust_test~tilde",
+        "rust_test(parens)",
+    ];
+
+    for key in &keys {
+        cleanup(&client, &[key]).await;
+
+        let data = format!("data for {}", key);
+        let result = client.put(key, data.as_bytes()).await.unwrap();
+        assert!(!result.hash.is_empty(), "PUT failed for key: {}", key);
+
+        let value = client.get(key).await.unwrap();
+        assert_eq!(value, Some(data.as_bytes().to_vec()), "GET mismatch for key: {}", key);
+
+        let deleted = client.delete(key).await.unwrap();
+        assert!(deleted, "DELETE failed for key: {}", key);
+    }
+}
+
+#[tokio::test]
+async fn test_keys_with_unicode() {
+    let client = get_client();
+    let keys = [
+        "rust_test_ключ",
+        "rust_test_键",
+        "rust_test_مفتاح",
+        "rust_test_日本語キー",
+    ];
+
+    for key in &keys {
+        cleanup(&client, &[key]).await;
+
+        let data = format!("data for {}", key);
+        let result = client.put(key, data.as_bytes()).await.unwrap();
+        assert!(!result.hash.is_empty(), "PUT failed for key: {}", key);
+
+        let value = client.get(key).await.unwrap();
+        assert_eq!(value, Some(data.as_bytes().to_vec()), "GET mismatch for key: {}", key);
+
+        let deleted = client.delete(key).await.unwrap();
+        assert!(deleted, "DELETE failed for key: {}", key);
+    }
+}
+
+#[tokio::test]
+async fn test_keys_with_hash_and_question_mark() {
+    let client = get_client();
+    // These characters are URI-structural (#, ?) and must be encoded by the client
+    let keys = [
+        "rust_test#hash",
+        "rust_test?question",
+        "rust_test%percent",
+    ];
+
+    for key in &keys {
+        cleanup(&client, &[key]).await;
+
+        let data = format!("data for {}", key);
+        let result = client.put(key, data.as_bytes()).await.unwrap();
+        assert!(!result.hash.is_empty(), "PUT failed for key: {}", key);
+
+        let value = client.get(key).await.unwrap();
+        assert_eq!(value, Some(data.as_bytes().to_vec()), "GET mismatch for key: {}", key);
+
+        let deleted = client.delete(key).await.unwrap();
+        assert!(deleted, "DELETE failed for key: {}", key);
+    }
 }

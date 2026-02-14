@@ -12,8 +12,37 @@ use hyper_util::client::legacy::Client as HttpClient;
 use hyper_util::rt::TokioExecutor;
 use tracing::debug;
 
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+
 use crate::error::{Error, Result};
 use crate::types::*;
+
+/// Characters allowed unencoded in URI path segments per RFC 3986.
+/// Everything else (including spaces, `#`, `?`, `%`, non-ASCII) gets percent-encoded.
+const PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'!')
+    .remove(b'$')
+    .remove(b'&')
+    .remove(b'\'')
+    .remove(b'(')
+    .remove(b')')
+    .remove(b'*')
+    .remove(b'+')
+    .remove(b',')
+    .remove(b';')
+    .remove(b'=')
+    .remove(b':')
+    .remove(b'@')
+    .remove(b'/');
+
+/// Percent-encode a key for use in a URI path.
+fn encode_key(key: &str) -> String {
+    utf8_percent_encode(key, PATH_SEGMENT).to_string()
+}
 
 /// Configuration options for the KV Storage client
 #[derive(Debug, Clone)]
@@ -67,7 +96,6 @@ impl Default for ClientConfig {
 pub struct Client {
     config: Arc<ClientConfig>,
     http_client: HttpClient<HttpConnector, Full<Bytes>>,
-    base_uri: Uri,
 }
 
 impl Client {
@@ -90,7 +118,8 @@ impl Client {
 
     /// Create a new client with custom configuration
     pub fn with_config(config: ClientConfig) -> Result<Self> {
-        let base_uri: Uri = config.endpoint.parse()
+        // Validate the endpoint URL early
+        let _: Uri = config.endpoint.parse()
             .map_err(|e| Error::InvalidUrl(format!("Invalid endpoint URL: {}", e)))?;
 
         let http_client = HttpClient::builder(TokioExecutor::new())
@@ -100,7 +129,6 @@ impl Client {
         Ok(Self {
             config: Arc::new(config),
             http_client,
-            base_uri,
         })
     }
 
@@ -207,7 +235,7 @@ impl Client {
         let mut headers = HashMap::new();
         headers.insert("content-type".to_string(), "application/octet-stream".to_string());
 
-        let path = format!("/{}", key);
+        let path = format!("/{}", encode_key(key));
         let response = self
             .request(&path, &hyper::Method::PUT, Some(Bytes::copy_from_slice(value)), Some(headers))
             .await?;
@@ -262,7 +290,7 @@ impl Client {
     /// # }
     /// ```
     pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let path = format!("/{}", key);
+        let path = format!("/{}", encode_key(key));
         match self.request(&path, &hyper::Method::GET, None, None).await {
             Ok(response) => {
                 let body_bytes = Self::read_body_to_bytes(response.into_body()).await?;
@@ -320,7 +348,7 @@ impl Client {
     /// # }
     /// ```
     pub async fn delete(&self, key: &str) -> Result<bool> {
-        let path = format!("/{}", key);
+        let path = format!("/{}", encode_key(key));
         match self.request(&path, &hyper::Method::DELETE, None, None).await {
             Ok(_) => Ok(true),
             Err(Error::NotFound(_)) => Ok(false),
@@ -349,7 +377,7 @@ impl Client {
     /// # }
     /// ```
     pub async fn head(&self, key: &str) -> Result<Option<HeadInfo>> {
-        let path = format!("/{}", key);
+        let path = format!("/{}", encode_key(key));
         match self.request(&path, &hyper::Method::HEAD, None, None).await {
             Ok(response) => Ok(HeadInfo::from_headers(response.headers())),
             Err(Error::NotFound(_)) => Ok(None),

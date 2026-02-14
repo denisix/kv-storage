@@ -238,6 +238,151 @@ async function main() {
     client.close();
   });
 
+  // Test keys with spaces
+  await runTest('PUT and GET keys with spaces', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 5000,
+    });
+
+    const keys = [
+      'test key with spaces',
+      'test hello world',
+      'test path/to/my file.txt',
+    ];
+
+    for (const key of keys) {
+      await ensureClean(client, [key]);
+
+      const data = `data for ${key}`;
+      const result = await client.put(key, data);
+      if (typeof result.hash !== 'string' || result.hash.length === 0) {
+        throw new Error(`PUT failed for key "${key}": invalid hash`);
+      }
+
+      const value = await client.get(key);
+      if (value !== data) {
+        throw new Error(`GET mismatch for key "${key}": expected "${data}" but got "${value}"`);
+      }
+
+      const deleted = await client.delete(key);
+      if (!deleted) {
+        throw new Error(`DELETE failed for key "${key}"`);
+      }
+    }
+
+    client.close();
+  });
+
+  // Test keys with special characters
+  await runTest('PUT and GET keys with special characters', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 5000,
+    });
+
+    const keys = [
+      'test:colons:here',
+      'test.dots.here',
+      'test-dashes-here',
+      'test_underscores_here',
+      'test/slashes/here',
+      'test!exclaim',
+      'test~tilde',
+      'test(parens)',
+    ];
+
+    for (const key of keys) {
+      await ensureClean(client, [key]);
+
+      const data = `data for ${key}`;
+      const result = await client.put(key, data);
+      if (typeof result.hash !== 'string') {
+        throw new Error(`PUT failed for key "${key}"`);
+      }
+
+      const value = await client.get(key);
+      if (value !== data) {
+        throw new Error(`GET mismatch for key "${key}": expected "${data}" but got "${value}"`);
+      }
+
+      await client.delete(key);
+    }
+
+    client.close();
+  });
+
+  // Test keys with unicode
+  await runTest('PUT and GET keys with unicode', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 5000,
+    });
+
+    const keys = [
+      'test_ключ',
+      'test_键',
+      'test_مفتاح',
+      'test_日本語キー',
+    ];
+
+    for (const key of keys) {
+      await ensureClean(client, [key]);
+
+      const data = `data for ${key}`;
+      const result = await client.put(key, data);
+      if (typeof result.hash !== 'string') {
+        throw new Error(`PUT failed for key "${key}"`);
+      }
+
+      const value = await client.get(key);
+      if (value !== data) {
+        throw new Error(`GET mismatch for key "${key}": expected "${data}" but got "${value}"`);
+      }
+
+      await client.delete(key);
+    }
+
+    client.close();
+  });
+
+  // Test keys with URI-structural characters (#, ?, %)
+  await runTest('PUT and GET keys with # ? % characters', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 5000,
+    });
+
+    const keys = [
+      'test#hash',
+      'test?question',
+      'test%percent',
+    ];
+
+    for (const key of keys) {
+      await ensureClean(client, [key]);
+
+      const data = `data for ${key}`;
+      const result = await client.put(key, data);
+      if (typeof result.hash !== 'string') {
+        throw new Error(`PUT failed for key "${key}"`);
+      }
+
+      const value = await client.get(key);
+      if (value !== data) {
+        throw new Error(`GET mismatch for key "${key}": expected "${data}" but got "${value}"`);
+      }
+
+      await client.delete(key);
+    }
+
+    client.close();
+  });
+
   // Test METRICS
   await runTest('METRICS endpoint', async () => {
     const client = new KVStorage({

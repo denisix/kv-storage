@@ -73,10 +73,10 @@ impl Handler {
         let path = req.uri().path().to_string();
         let query = req.uri().query().map(|q| q.to_string());
 
-        // Route request
+        // Route request — key is the raw URI path after '/', no percent-decoding
         let result = match (method.as_str(), path.as_str()) {
             ("PUT", _) if path.len() > 1 => {
-                let key = &path[1..]; // Remove leading '/'
+                let key = &path[1..];
                 self.handle_put(key, req).await
             }
             ("GET", "/metrics") => self.handle_metrics(),

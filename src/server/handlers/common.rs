@@ -137,4 +137,50 @@ mod tests {
         let result = validate_key("test-key");
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_validate_key_with_spaces() {
+        assert!(validate_key("key with spaces").is_ok());
+        assert!(validate_key("hello world").is_ok());
+        assert!(validate_key(" leading space").is_ok());
+        assert!(validate_key("trailing space ").is_ok());
+    }
+
+    #[test]
+    fn test_validate_key_with_special_characters() {
+        assert!(validate_key("key/with/slashes").is_ok());
+        assert!(validate_key("key.with.dots").is_ok());
+        assert!(validate_key("key:with:colons").is_ok());
+        assert!(validate_key("key#with#hash").is_ok());
+        assert!(validate_key("key?with?question").is_ok());
+        assert!(validate_key("key%with%percent").is_ok());
+        assert!(validate_key("key@with@at").is_ok());
+        assert!(validate_key("key!exclaim").is_ok());
+        assert!(validate_key("key~tilde").is_ok());
+        assert!(validate_key("key(parens)").is_ok());
+        assert!(validate_key("key[brackets]").is_ok());
+        assert!(validate_key("key{braces}").is_ok());
+    }
+
+    #[test]
+    fn test_validate_key_with_unicode() {
+        assert!(validate_key("ключ").is_ok());
+        assert!(validate_key("键").is_ok());
+        assert!(validate_key("مفتاح").is_ok());
+        assert!(validate_key("日本語キー").is_ok());
+        assert!(validate_key("emoji🔑key").is_ok());
+    }
+
+    #[test]
+    fn test_validate_key_rejects_control_characters() {
+        assert!(validate_key("key\x00null").is_err());
+        assert!(validate_key("key\x01soh").is_err());
+        assert!(validate_key("key\nnewline").is_err());
+        assert!(validate_key("key\rreturn").is_err());
+    }
+
+    #[test]
+    fn test_validate_key_allows_tab() {
+        assert!(validate_key("key\twith\ttabs").is_ok());
+    }
 }

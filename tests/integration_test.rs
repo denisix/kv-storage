@@ -508,6 +508,55 @@ fn test_special_characters_in_key() {
 }
 
 #[test]
+fn test_keys_with_percent_encoded_spaces() {
+    // The server stores the raw URI path as the key (no decoding).
+    // PUT /key%20with%20spaces stores the key literally as "key%20with%20spaces".
+    let encoded_keys = [
+        "/key%20with%20spaces",
+        "/hello%20world",
+        "/path/to/my%20file.txt",
+    ];
+
+    for encoded_path in &encoded_keys {
+        let data = format!("data for {}", encoded_path);
+        let (_, status) = make_auth_request("PUT", encoded_path, Some(data.as_bytes())).unwrap();
+        assert!(status == reqwest::StatusCode::CREATED || status == reqwest::StatusCode::OK,
+            "PUT {} failed with status {}", encoded_path, status);
+
+        // GET with the same encoded path retrieves the value
+        let (result, status) = make_auth_request("GET", encoded_path, None).unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "GET {} failed", encoded_path);
+        assert_eq!(result, data);
+
+        make_auth_request("DELETE", encoded_path, None).unwrap();
+    }
+}
+
+#[test]
+fn test_keys_with_percent_encoded_special_chars() {
+    // The server stores the raw URI path — percent-encoded sequences are kept as-is.
+    let encoded_keys = [
+        "/key%23with%23hash",        // %23 = #
+        "/key%3Fwith%3Fquestion",    // %3F = ?
+        "/key%25with%25percent",     // %25 = %
+        "/key%40at%40sign",          // %40 = @
+    ];
+
+    for encoded_path in &encoded_keys {
+        let data = format!("data for {}", encoded_path);
+        let (_, status) = make_auth_request("PUT", encoded_path, Some(data.as_bytes())).unwrap();
+        assert!(status == reqwest::StatusCode::CREATED || status == reqwest::StatusCode::OK,
+            "PUT {} failed with status {}", encoded_path, status);
+
+        let (result, status) = make_auth_request("GET", encoded_path, None).unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "GET {} failed", encoded_path);
+        assert_eq!(result, data);
+
+        make_auth_request("DELETE", encoded_path, None).unwrap();
+    }
+}
+
+#[test]
 fn test_unicode_in_key() {
     let unicode_keys = ["test-ключ", "test-键", "test-مفتاح"];
 

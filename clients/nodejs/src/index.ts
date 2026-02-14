@@ -229,6 +229,15 @@ export class KVStorage {
   private readonly sessionTimeout: number;
   private session: HTTP2Session | null = null;
 
+  /**
+   * Percent-encode a key for use in a URI path.
+   * Preserves `/` separators but encodes spaces, `#`, `?`, `%`, and other
+   * characters that are not valid in URI path segments.
+   */
+  private static encodeKey(key: string): string {
+    return key.split('/').map(s => encodeURIComponent(s)).join('/');
+  }
+
   constructor(options: KVStorageOptions) {
     this.endpoint = options.endpoint || 'http://localhost:3000';
     this.token = options.token;
@@ -322,7 +331,7 @@ export class KVStorage {
         ? Buffer.from(value, 'utf-8')
         : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
 
-    const result = await this.request(`/${key}`, {
+    const result = await this.request(`/${KVStorage.encodeKey(key)}`, {
       method: 'PUT',
       body,
       headers: {
@@ -363,7 +372,7 @@ export class KVStorage {
     key: string,
     encoding: 'utf-8' | 'binary' = 'utf-8'
   ): Promise<string | Buffer | null> {
-    const result = await this.request(`/${key}`, {
+    const result = await this.request(`/${KVStorage.encodeKey(key)}`, {
       method: 'GET',
       throwOnNotFound: false,
     });
@@ -391,7 +400,7 @@ export class KVStorage {
    * ```
    */
   async delete(key: string): Promise<boolean> {
-    const result = await this.request(`/${key}`, {
+    const result = await this.request(`/${KVStorage.encodeKey(key)}`, {
       method: 'DELETE',
       throwOnNotFound: false,
     });
@@ -415,7 +424,7 @@ export class KVStorage {
    * ```
    */
   async head(key: string): Promise<HeadInfo | null> {
-    const result = await this.request(`/${key}`, {
+    const result = await this.request(`/${KVStorage.encodeKey(key)}`, {
       method: 'HEAD',
       throwOnNotFound: false,
     });
