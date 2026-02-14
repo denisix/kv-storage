@@ -1,57 +1,49 @@
 # Multi-stage Dockerfile for kv-storage
 # Stage 1: Build
-FROM rust:1.91-alpine AS builder
+FROM rust:alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache musl-dev
 
 WORKDIR /build
 
-# Copy manifests and lockfile first to leverage Docker cache
+# Copy manifests first to leverage Docker cache
 COPY Cargo.toml Cargo.lock ./
 
-# Create dummy sources to build dependencies
+# Create dummy sources to cache dependencies
 RUN mkdir -p src benches && \
     echo "fn main() {}" > src/main.rs && \
     echo "" > src/lib.rs && \
-    echo "fn main() {}" > benches/kv_bench.rs
+    echo "fn main() {}" > benches/kv_bench.rs && \
+    cargo fetch --locked
 
-# Build dependencies (this layer will be cached if dependencies don't change)
-RUN cargo build --release && \
-    rm -rf src benches
+# Build dependencies (cached layer)
+RUN cargo build --release && rm -rf src
 
-# Copy actual source code and recreate dummy bench (benches/ excluded via .dockerignore)
+# Copy source and build application
 COPY src ./src
-RUN mkdir -p benches && echo "fn main() {}" > benches/kv_bench.rs
+RUN mkdir -p benches && echo "fn main() {}" > benches/kv_bench.rs && \
+    find src -name '*.rs' -exec touch {} + && \
+    cargo build --release --locked
 
-# Touch all source files so cargo detects changes vs cached dummy build
-RUN find src -name '*.rs' -exec touch {} +
-
-# Build the actual application
-RUN cargo build --release
-
-# Stage 2: Minimal Alpine runtime (musl-linked binary needs musl)
-FROM alpine:3.23
+# Stage 2: Minimal runtime
+FROM alpine
 
 LABEL org.opencontainers.image.source="https://github.com/denisix/kv-storage"
-LABEL org.opencontainers.image.description="KV Storage: High-performance key-value storage system built in Rust with HTTP/2, content deduplication, atomic writes, and Zstd compression"
+LABEL org.opencontainers.image.description="KV Storage: High-performance key-value storage with HTTP/2, deduplication, and Zstd compression"
 LABEL org.opencontainers.image.licenses=MIT
 
-# curl for healthcheck (server is HTTP/2 only, wget doesn't support h2c)
+# curl for healthcheck (HTTP/2 h2c required)
 RUN apk add --no-cache curl
 
-# Copy binary from builder
-COPY --from=builder /build/target/release/kv-storage /kv-storage
+# Create user and copy binary with correct ownership in single layer
+RUN adduser -D -u 10001 kvuser && mkdir -p /data && chown kvuser:kvuser /data
 
-# Create non-root user and data directory with correct ownership
-RUN adduser -D -u 10001 kvuser && \
-    mkdir -p /data && chown kvuser:kvuser /data
+COPY --from=builder --chown=kvuser:kvuser /build/target/release/kv-storage /kv-storage
 
 USER kvuser
-
 WORKDIR /data
 
-# Environment variables (TOKEN intentionally has no default — must be set at runtime)
 ENV DB_PATH=/data/kv_db \
     BIND_ADDR=0.0.0.0:3000 \
     COMPRESSION_LEVEL=1 \
@@ -60,8 +52,8 @@ ENV DB_PATH=/data/kv_db \
 
 EXPOSE 3000
 
-# Server is HTTP/2 only — use h2c and pass auth token from env
+# Healthcheck uses /keys endpoint (read-only, no auth required for health status)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -sf --http2-prior-knowledge -H "Authorization: Bearer $TOKEN" http://localhost:3000/metrics > /dev/null || exit 1
+    CMD curl -sf --http2-prior-knowledge -H "Authorization: Bearer ${TOKEN}" http://localhost:3000/keys?limit=1 -o /dev/null || exit 1
 
 ENTRYPOINT ["/kv-storage"]
