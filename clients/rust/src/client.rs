@@ -92,6 +92,13 @@ impl Default for ClientConfig {
 ///     Ok(())
 /// }
 /// ```
+///
+/// # Example
+///
+/// ```
+/// use kv_storage_client::Client;
+/// let client = Client::new("http://localhost:3000", "my-token").unwrap();
+/// ```
 #[derive(Clone)]
 pub struct Client {
     config: Arc<ClientConfig>,
