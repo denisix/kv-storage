@@ -8,6 +8,8 @@ pub struct Config {
     pub compression_level: i32,
     pub cache_capacity_bytes: Option<usize>,
     pub flush_interval_ms: Option<u64>,
+    pub ssl_cert: Option<String>,
+    pub ssl_key: Option<String>,
 }
 
 impl Config {
@@ -35,6 +37,14 @@ impl Config {
                 .unwrap_or(1000)
         );
 
+        // SSL certificate and key paths (both must be set to enable TLS)
+        let ssl_cert = env::var("SSL_CERT").ok();
+        let ssl_key = env::var("SSL_KEY").ok();
+
+        if ssl_cert.is_some() != ssl_key.is_some() {
+            return Err("Both SSL_CERT and SSL_KEY must be set to enable TLS".to_string());
+        }
+
         Ok(Config {
             db_path,
             auth_token,
@@ -42,6 +52,8 @@ impl Config {
             compression_level,
             cache_capacity_bytes,
             flush_interval_ms,
+            ssl_cert,
+            ssl_key,
         })
     }
 }
@@ -206,5 +218,75 @@ mod tests {
 
         // Clean up
         env::remove_var("COMPRESSION_LEVEL");
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_ssl_neither_set() {
+        env::remove_var("COMPRESSION_LEVEL");
+        env::remove_var("KV_CACHE_CAPACITY");
+        env::remove_var("KV_FLUSH_INTERVAL_MS");
+        env::remove_var("SSL_CERT");
+        env::remove_var("SSL_KEY");
+        env::set_var("TOKEN", "test-token");
+
+        let config = Config::from_env().unwrap();
+        assert!(config.ssl_cert.is_none());
+        assert!(config.ssl_key.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_ssl_both_set() {
+        env::remove_var("COMPRESSION_LEVEL");
+        env::remove_var("KV_CACHE_CAPACITY");
+        env::remove_var("KV_FLUSH_INTERVAL_MS");
+        env::set_var("TOKEN", "test-token");
+        env::set_var("SSL_CERT", "/path/to/cert.pem");
+        env::set_var("SSL_KEY", "/path/to/key.pem");
+
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.ssl_cert, Some("/path/to/cert.pem".to_string()));
+        assert_eq!(config.ssl_key, Some("/path/to/key.pem".to_string()));
+
+        // Clean up
+        env::remove_var("SSL_CERT");
+        env::remove_var("SSL_KEY");
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_ssl_only_cert_set() {
+        env::remove_var("COMPRESSION_LEVEL");
+        env::remove_var("KV_CACHE_CAPACITY");
+        env::remove_var("KV_FLUSH_INTERVAL_MS");
+        env::remove_var("SSL_KEY");
+        env::set_var("TOKEN", "test-token");
+        env::set_var("SSL_CERT", "/path/to/cert.pem");
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("SSL_CERT"));
+
+        // Clean up
+        env::remove_var("SSL_CERT");
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_ssl_only_key_set() {
+        env::remove_var("COMPRESSION_LEVEL");
+        env::remove_var("KV_CACHE_CAPACITY");
+        env::remove_var("KV_FLUSH_INTERVAL_MS");
+        env::remove_var("SSL_CERT");
+        env::set_var("TOKEN", "test-token");
+        env::set_var("SSL_KEY", "/path/to/key.pem");
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("SSL_CERT"));
+
+        // Clean up
+        env::remove_var("SSL_KEY");
     }
 }

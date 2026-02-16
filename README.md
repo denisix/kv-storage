@@ -4,7 +4,8 @@ High-performance key-value storage system built in Rust with HTTP/2, content ded
 
 ## Features
 
-- **HTTP/2 (h2c)** - Binary framing and multiplexing over plaintext
+- **HTTP/2 (h2c/h2)** - Binary framing and multiplexing over plaintext or TLS
+- **TLS/SSL Support** - HTTPS with optional certificate fingerprint pinning
 - **Content Deduplication** - Identical data stored once via xxHash3-128 content addressing
 - **Atomic Writes** - Sled ACID transactions prevent race conditions
 - **Zstd Compression** - Transparent compression with smart thresholds (skip <512B, inline <=64KB, async >64KB)
@@ -19,7 +20,7 @@ High-performance key-value storage system built in Rust with HTTP/2, content ded
 # Set your authentication token
 export TOKEN="your-secret-token"
 
-# Run the server
+# Run the server (HTTP/2 cleartext mode)
 cargo run --release
 
 # Store a value (server is HTTP/2 only — use --http2-prior-knowledge for h2c)
@@ -32,6 +33,8 @@ curl --http2-prior-knowledge http://localhost:3000/mykey \
   -H "Authorization: Bearer your-secret-token"
 ```
 
+For HTTPS mode, set `SSL_CERT` and `SSL_KEY` (see [TLS/SSL](#tlsssl) below).
+
 ## Docker
 
 ```bash
@@ -39,6 +42,15 @@ curl --http2-prior-knowledge http://localhost:3000/mykey \
 docker run -d --name kv-storage -p 3000:3000 \
   -e TOKEN=your-secret-token \
   -v kv-data:/data \
+  ghcr.io/denisix/kv-storage:latest
+
+# With TLS support
+docker run -d --name kv-storage -p 3000:3000 \
+  -e TOKEN=your-secret-token \
+  -e SSL_CERT=/certs/cert.pem \
+  -e SSL_KEY=/certs/key.pem \
+  -v kv-data:/data \
+  -v ./certs:/certs:ro \
   ghcr.io/denisix/kv-storage:latest
 
 # Or use docker compose
@@ -93,14 +105,20 @@ Key constraints:
 
 ## API Reference
 
-All endpoints require `Authorization: Bearer <TOKEN>` and HTTP/2 prior knowledge (`--http2-prior-knowledge` with curl).
+All endpoints require `Authorization: Bearer <TOKEN>` and HTTP/2. Use `--http2-prior-knowledge` for plaintext h2c connections, or standard HTTPS with curl's native HTTP/2 support.
 
 ### PUT /{key}
 
 Store a value. Returns the xxHash3-128 hash.
 
 ```bash
+# Plaintext (h2c)
 curl --http2-prior-knowledge -X PUT http://localhost:3000/mykey \
+  -H "Authorization: Bearer TOKEN" \
+  --data-binary @file.bin
+
+# HTTPS
+curl -X PUT https://localhost:3000/mykey \
   -H "Authorization: Bearer TOKEN" \
   --data-binary @file.bin
 ```
@@ -114,7 +132,12 @@ curl --http2-prior-knowledge -X PUT http://localhost:3000/mykey \
 Retrieve a value.
 
 ```bash
+# Plaintext (h2c)
 curl --http2-prior-knowledge http://localhost:3000/mykey \
+  -H "Authorization: Bearer TOKEN" -o output.bin
+
+# HTTPS
+curl https://localhost:3000/mykey \
   -H "Authorization: Bearer TOKEN" -o output.bin
 ```
 
@@ -188,18 +211,109 @@ Exported metrics:
 | `DB_PATH` | `./kv_db` | Database storage path |
 | `BIND_ADDR` | `0.0.0.0:3000` | Server bind address |
 | `COMPRESSION_LEVEL` | `1` | Zstd level: 0 = off, 1-9 = compression |
+| `SSL_CERT` | *unset* | Path to PEM certificate file (enables TLS) |
+| `SSL_KEY` | *unset* | Path to PEM private key file (enables TLS) |
 | `KV_CACHE_CAPACITY` | `1073741824` | Sled cache size in bytes (1GB) |
 | `KV_FLUSH_INTERVAL_MS` | `1000` | Sled flush interval in ms |
+
+## TLS/SSL
+
+The server supports TLS/SSL for encrypted HTTP/2 connections. When both `SSL_CERT` and `SSL_KEY` are set, the server accepts HTTPS connections with ALPN h2 negotiation.
+
+### Generating a Self-Signed Certificate
+
+For testing, generate a self-signed certificate:
+
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
+```
+
+### Running with TLS
+
+```bash
+# Set both SSL_CERT and SSL_KEY to enable TLS
+export SSL_CERT="/path/to/cert.pem"
+export SSL_KEY="/path/to/key.pem"
+export TOKEN="your-secret-token"
+
+cargo run --release
+```
+
+When TLS is enabled:
+- The server listens for HTTPS connections on `BIND_ADDR`
+- HTTP/2 is negotiated via ALPN (h2)
+- Plaintext h2c connections are not accepted
+
+### Using curl with HTTPS
+
+```bash
+# With a trusted certificate
+curl -X PUT https://localhost:3000/mykey \
+  -H "Authorization: Bearer TOKEN" \
+  --data-binary @file.bin
+
+# With a self-signed certificate (skip verification)
+curl -X PUT https://localhost:3000/mykey \
+  -H "Authorization: Bearer TOKEN" \
+  --data-binary @file.bin \
+  -k
+
+# With certificate fingerprint pinning (SHA-256)
+curl -X PUT https://localhost:3000/mykey \
+  -H "Authorization: Bearer TOKEN" \
+  --data-binary @file.bin \
+  --pinnedpubkey "sha256//$(openssl x509 -in cert.pem -noout -fingerprint -sha256 | cut -d= -f2 | tr -d :)"
+```
+
+### Certificate Fingerprint Pinning
+
+For enhanced security, clients can pin the server's certificate by its SHA-256 fingerprint. This protects against man-in-the-middle attacks even with self-signed certificates.
+
+**Get the certificate fingerprint:**
+
+```bash
+# Using openssl
+openssl x509 -in cert.pem -noout -fingerprint -sha256
+
+# Or convert to the format needed by clients (lowercase hex, no colons)
+openssl x509 -in cert.pem -noout -fingerprint -sha256 | cut -d= -f2 | tr -d : | tr '[:upper:]' '[:lower:]'
+```
+
+**Rust client with fingerprint pinning:**
+
+```rust
+use kv_storage_client::{Client, ClientConfig};
+
+let client = Client::with_config(ClientConfig {
+    endpoint: "https://localhost:3000".to_string(),
+    token: "your-token".to_string(),
+    ssl_fingerprint: Some("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string()),
+    ..Default::default()
+})?;
+```
+
+**Node.js client with fingerprint pinning:**
+
+```typescript
+import { KVStorage } from '@kv-storage/client';
+
+const client = new KVStorage({
+  endpoint: 'https://localhost:3000',
+  token: 'your-token',
+  sslFingerprint: 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89'
+});
+```
 
 ## Development
 
 ```bash
-make build          # Debug build
-make test           # Unit tests (46 tests)
+make build             # Debug build
+make test              # Unit tests
 make test-integration  # Integration tests (requires running server)
-make clippy         # Lint
-make bench          # Criterion benchmarks
-make run-dev        # Dev server with TOKEN=test-token
+make test-tls          # TLS integration tests (generates self-signed cert)
+make clippy            # Lint
+make bench             # Criterion benchmarks
+make run-dev           # Dev server with TOKEN=test-token
 ```
 
 ## Storage Architecture
@@ -215,8 +329,8 @@ Deduplication: multiple keys can point to the same object hash. Objects are garb
 
 ## Client Libraries
 
-- **Rust** - `clients/rust/` - Async HTTP/2 client with full API coverage and automatic key encoding
-- **Node.js** - `clients/nodejs/` - TypeScript/JavaScript HTTP/2 client with automatic key encoding
+- **Rust** - `clients/rust/` - Async HTTP/2 client with full API coverage, automatic key encoding, TLS support, and certificate fingerprint pinning
+- **Node.js** - `clients/nodejs/` - TypeScript/JavaScript HTTP/2 client with automatic key encoding, TLS support, and certificate fingerprint pinning
 
 ## License
 

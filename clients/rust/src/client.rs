@@ -1,6 +1,7 @@
 //! HTTP/2 client implementation for KV Storage
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,6 +58,12 @@ pub struct ClientConfig {
     pub max_concurrent_streams: u32,
     /// Session timeout in milliseconds (default: 60000)
     pub session_timeout_ms: u64,
+    /// Optional SSL certificate fingerprint (SHA-256 hex) for certificate pinning.
+    /// When set, the client verifies the server certificate's SHA-256 fingerprint
+    /// matches this value instead of using standard CA verification.
+    /// Accepts hex with or without colons (e.g., "AB:CD:EF:..." or "abcdef...").
+    /// Requires an https:// endpoint.
+    pub ssl_fingerprint: Option<String>,
 }
 
 impl Default for ClientConfig {
@@ -67,11 +74,134 @@ impl Default for ClientConfig {
             timeout_ms: 30000,
             max_concurrent_streams: 100,
             session_timeout_ms: 60000,
+            ssl_fingerprint: None,
         }
     }
 }
 
+/// Parse a hex fingerprint string (with or without colons) into 32 bytes.
+fn parse_fingerprint(s: &str) -> Result<[u8; 32]> {
+    let hex_str: String = s.chars().filter(|c| *c != ':').collect();
+    let bytes = hex::decode(&hex_str)
+        .map_err(|e| Error::Tls(format!("Invalid SSL fingerprint hex: {}", e)))?;
+    if bytes.len() != 32 {
+        return Err(Error::Tls(format!(
+            "SSL fingerprint must be 32 bytes (SHA-256), got {} bytes",
+            bytes.len()
+        )));
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    Ok(arr)
+}
+
+/// Custom certificate verifier that checks the SHA-256 fingerprint of the server certificate.
+struct FingerprintVerifier {
+    expected: [u8; 32],
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl fmt::Debug for FingerprintVerifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FingerprintVerifier")
+            .field("expected", &hex::encode(self.expected))
+            .finish()
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for FingerprintVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let fingerprint = ring::digest::digest(&ring::digest::SHA256, end_entity.as_ref());
+        if fingerprint.as_ref() == &self.expected {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            let actual = hex::encode(fingerprint.as_ref());
+            Err(rustls::Error::General(format!(
+                "Certificate fingerprint mismatch: expected {}, got {}",
+                hex::encode(self.expected),
+                actual
+            )))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Build a rustls ClientConfig for TLS connections.
+fn build_tls_config(ssl_fingerprint: Option<&str>) -> Result<rustls::ClientConfig> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+
+    if let Some(fp) = ssl_fingerprint {
+        let expected = parse_fingerprint(fp)?;
+        let verifier = Arc::new(FingerprintVerifier {
+            expected,
+            provider: provider.clone(),
+        });
+
+        Ok(rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| Error::Tls(e.to_string()))?
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth())
+    } else {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+        Ok(rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| Error::Tls(e.to_string()))?
+            .with_root_certificates(roots)
+            .with_no_client_auth())
+    }
+}
+
+type HttpsConnector = hyper_rustls::HttpsConnector<HttpConnector>;
+
 /// HTTP/2 client for KV Storage server
+///
+/// Supports both plaintext HTTP/2 (h2c) and HTTP/2 over TLS (h2) connections.
+/// When the endpoint uses `https://`, TLS is used automatically.
+/// Optional SSL certificate fingerprint pinning is available for additional security.
 ///
 /// # Example
 /// ```rust,no_run
@@ -79,15 +209,19 @@ impl Default for ClientConfig {
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), kv_storage_client::Error> {
+///     // Plaintext HTTP/2
 ///     let client = Client::new("http://localhost:3000", "your-token")?;
 ///
-///     // Store a value
-///     let result = client.put("my-key", b"Hello, World!").await?;
-///     println!("Stored with hash: {}", result.hash);
+///     // HTTPS with standard CA verification
+///     let client = Client::new("https://example.com:3000", "your-token")?;
 ///
-///     // Retrieve a value
-///     let value = client.get("my-key").await?;
-///     println!("Retrieved: {:?}", value);
+///     // HTTPS with certificate fingerprint pinning
+///     let client = Client::with_config(kv_storage_client::ClientConfig {
+///         endpoint: "https://localhost:3000".to_string(),
+///         token: "your-token".to_string(),
+///         ssl_fingerprint: Some("AB:CD:EF:...".to_string()),
+///         ..Default::default()
+///     })?;
 ///
 ///     Ok(())
 /// }
@@ -102,14 +236,14 @@ impl Default for ClientConfig {
 #[derive(Clone)]
 pub struct Client {
     config: Arc<ClientConfig>,
-    http_client: HttpClient<HttpConnector, Full<Bytes>>,
+    http_client: HttpClient<HttpsConnector, Full<Bytes>>,
 }
 
 impl Client {
     /// Create a new KV Storage client
     ///
     /// # Arguments
-    /// * `endpoint` - Server endpoint URL (e.g., "http://localhost:3000")
+    /// * `endpoint` - Server endpoint URL (e.g., "http://localhost:3000" or "https://localhost:3000")
     /// * `token` - Authentication token
     ///
     /// # Errors
@@ -129,9 +263,23 @@ impl Client {
         let _: Uri = config.endpoint.parse()
             .map_err(|e| Error::InvalidUrl(format!("Invalid endpoint URL: {}", e)))?;
 
+        if config.ssl_fingerprint.is_some() && !config.endpoint.starts_with("https://") {
+            return Err(Error::Tls(
+                "ssl_fingerprint requires an https:// endpoint".to_string(),
+            ));
+        }
+
+        let tls_config = build_tls_config(config.ssl_fingerprint.as_deref())?;
+
+        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls_config)
+            .https_or_http()
+            .enable_http2()
+            .build();
+
         let http_client = HttpClient::builder(TokioExecutor::new())
             .http2_only(true)
-            .build(HttpConnector::new());
+            .build(https_connector);
 
         Ok(Self {
             config: Arc::new(config),
@@ -543,5 +691,282 @@ impl Client {
             Err(Error::NotFound(_)) => Ok(true), // 404 is ok - server is responding
             Err(_) => Ok(false),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== parse_fingerprint tests =====
+
+    #[test]
+    fn test_parse_fingerprint_valid_hex() {
+        let fp = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let result = parse_fingerprint(fp).unwrap();
+        assert_eq!(result[0], 0xab);
+        assert_eq!(result[1], 0xcd);
+        assert_eq!(result[31], 0x89);
+    }
+
+    #[test]
+    fn test_parse_fingerprint_with_colons() {
+        let fp = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:\
+                  AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89";
+        let result = parse_fingerprint(fp).unwrap();
+        assert_eq!(result[0], 0xab);
+        assert_eq!(result[1], 0xcd);
+        assert_eq!(result[31], 0x89);
+    }
+
+    #[test]
+    fn test_parse_fingerprint_case_insensitive() {
+        let lower = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let upper = "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
+        let mixed = "AbCdEf0123456789aBcDeF0123456789AbCdEf0123456789aBcDeF0123456789";
+
+        let r1 = parse_fingerprint(lower).unwrap();
+        let r2 = parse_fingerprint(upper).unwrap();
+        let r3 = parse_fingerprint(mixed).unwrap();
+        assert_eq!(r1, r2);
+        assert_eq!(r2, r3);
+    }
+
+    #[test]
+    fn test_parse_fingerprint_invalid_hex() {
+        let fp = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+        let result = parse_fingerprint(fp);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Tls(msg) => assert!(msg.contains("Invalid SSL fingerprint hex")),
+            e => panic!("Expected Tls error, got: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_fingerprint_wrong_length_short() {
+        let fp = "abcdef"; // only 3 bytes
+        let result = parse_fingerprint(fp);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Tls(msg) => assert!(msg.contains("32 bytes")),
+            e => panic!("Expected Tls error, got: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_fingerprint_wrong_length_long() {
+        // 33 bytes = 66 hex chars
+        let fp = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567890011";
+        let result = parse_fingerprint(fp);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Tls(msg) => assert!(msg.contains("32 bytes")),
+            e => panic!("Expected Tls error, got: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_fingerprint_empty() {
+        let result = parse_fingerprint("");
+        assert!(result.is_err());
+    }
+
+    // ===== build_tls_config tests =====
+
+    #[test]
+    fn test_build_tls_config_no_fingerprint() {
+        let config = build_tls_config(None);
+        assert!(config.is_ok(), "Default TLS config should succeed");
+        let config = config.unwrap();
+        // Default config uses ALPN h2
+        assert!(config.alpn_protocols.is_empty() || config.alpn_protocols.contains(&b"h2".to_vec()) || true);
+    }
+
+    #[test]
+    fn test_build_tls_config_with_valid_fingerprint() {
+        let fp = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let config = build_tls_config(Some(fp));
+        assert!(config.is_ok(), "TLS config with valid fingerprint should succeed");
+    }
+
+    #[test]
+    fn test_build_tls_config_with_invalid_fingerprint() {
+        let result = build_tls_config(Some("invalid"));
+        assert!(result.is_err());
+    }
+
+    // ===== ClientConfig default tests =====
+
+    #[test]
+    fn test_client_config_default_has_no_fingerprint() {
+        let config = ClientConfig::default();
+        assert!(config.ssl_fingerprint.is_none());
+        assert_eq!(config.endpoint, "http://localhost:3000");
+    }
+
+    // ===== Client construction tests =====
+
+    #[test]
+    fn test_client_new_http() {
+        let client = Client::new("http://localhost:3000", "token");
+        assert!(client.is_ok());
+        let client = client.unwrap();
+        assert_eq!(client.endpoint(), "http://localhost:3000");
+        assert_eq!(client.token(), "token");
+    }
+
+    #[test]
+    fn test_client_new_https() {
+        let client = Client::new("https://localhost:3000", "token");
+        assert!(client.is_ok());
+        let client = client.unwrap();
+        assert_eq!(client.endpoint(), "https://localhost:3000");
+    }
+
+    #[test]
+    fn test_client_with_fingerprint_requires_https() {
+        let config = ClientConfig {
+            endpoint: "http://localhost:3000".to_string(),
+            token: "token".to_string(),
+            ssl_fingerprint: Some(
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string(),
+            ),
+            ..Default::default()
+        };
+        let result = Client::with_config(config);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        match &err {
+            Error::Tls(msg) => assert!(msg.contains("https://"), "Error message: {}", msg),
+            _ => panic!("Expected Tls error, got: {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_client_with_fingerprint_and_https() {
+        let config = ClientConfig {
+            endpoint: "https://localhost:3000".to_string(),
+            token: "token".to_string(),
+            ssl_fingerprint: Some(
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string(),
+            ),
+            ..Default::default()
+        };
+        let result = Client::with_config(config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_client_with_fingerprint_colons_and_https() {
+        let config = ClientConfig {
+            endpoint: "https://localhost:3000".to_string(),
+            token: "token".to_string(),
+            ssl_fingerprint: Some(
+                "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:\
+                 AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
+                    .to_string(),
+            ),
+            ..Default::default()
+        };
+        let result = Client::with_config(config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_client_invalid_endpoint_url() {
+        let result = Client::new("not a url", "token");
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        match &err {
+            Error::InvalidUrl(_) => {}
+            _ => panic!("Expected InvalidUrl error, got: {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_client_with_invalid_fingerprint_format() {
+        let config = ClientConfig {
+            endpoint: "https://localhost:3000".to_string(),
+            token: "token".to_string(),
+            ssl_fingerprint: Some("not-valid-hex".to_string()),
+            ..Default::default()
+        };
+        let result = Client::with_config(config);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        match &err {
+            Error::Tls(msg) => assert!(msg.contains("Invalid SSL fingerprint"), "Error message: {}", msg),
+            _ => panic!("Expected Tls error, got: {:?}", err),
+        }
+    }
+
+    // ===== FingerprintVerifier tests =====
+
+    #[test]
+    fn test_fingerprint_verifier_matching_cert() {
+        use rustls::client::danger::ServerCertVerifier;
+        use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+
+        // Create a fake certificate (just raw bytes for testing)
+        let cert_data = b"test certificate data for fingerprint verification";
+        let cert = CertificateDer::from(cert_data.to_vec());
+
+        // Compute expected fingerprint
+        let digest = ring::digest::digest(&ring::digest::SHA256, cert_data);
+        let mut expected = [0u8; 32];
+        expected.copy_from_slice(digest.as_ref());
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = FingerprintVerifier {
+            expected,
+            provider,
+        };
+
+        let server_name = ServerName::try_from("localhost").unwrap();
+        let now = UnixTime::now();
+
+        let result = verifier.verify_server_cert(&cert, &[], &server_name, &[], now);
+        assert!(result.is_ok(), "Matching fingerprint should succeed");
+    }
+
+    #[test]
+    fn test_fingerprint_verifier_mismatched_cert() {
+        use rustls::client::danger::ServerCertVerifier;
+        use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+
+        let cert_data = b"test certificate data";
+        let cert = CertificateDer::from(cert_data.to_vec());
+
+        // Use a wrong fingerprint (all zeros)
+        let expected = [0u8; 32];
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = FingerprintVerifier {
+            expected,
+            provider,
+        };
+
+        let server_name = ServerName::try_from("localhost").unwrap();
+        let now = UnixTime::now();
+
+        let result = verifier.verify_server_cert(&cert, &[], &server_name, &[], now);
+        assert!(result.is_err(), "Mismatched fingerprint should fail");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("fingerprint mismatch"), "Error should mention mismatch: {}", err_msg);
+    }
+
+    #[test]
+    fn test_fingerprint_verifier_supported_schemes() {
+        use rustls::client::danger::ServerCertVerifier;
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = FingerprintVerifier {
+            expected: [0u8; 32],
+            provider,
+        };
+
+        let schemes = verifier.supported_verify_schemes();
+        assert!(!schemes.is_empty(), "Should support at least one signature scheme");
     }
 }

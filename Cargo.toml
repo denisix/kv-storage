@@ -32,6 +32,11 @@ twox-hash = "2"
 subtle = "2.6"
 zeroize = "1"
 
+# TLS (optional, activated via SSL_CERT/SSL_KEY env vars)
+tokio-rustls = "0.26"
+rustls = { version = "0.23", features = ["ring", "std"] }
+rustls-pemfile = "2"
+
 # Utils
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -39,10 +44,15 @@ bytes = "1.9"
 
 [dev-dependencies]
 tokio-test = "0.4"
-reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls", "http2"], default-features = false }
 tempfile = "3.14"
 criterion = "0.5"
 serial_test = "3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+ring = "0.17"
+hex = "0.4"
+rcgen = "0.13"
 
 [[bench]]
 name = "kv_bench"

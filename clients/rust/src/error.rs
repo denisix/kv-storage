@@ -47,6 +47,10 @@ pub enum Error {
     #[error("Request timeout after {0}ms")]
     Timeout(u64),
 
+    /// TLS/SSL error
+    #[error("TLS error: {0}")]
+    Tls(String),
+
     /// URL parsing error
     #[error("Invalid URL: {0}")]
     InvalidUrl(String),

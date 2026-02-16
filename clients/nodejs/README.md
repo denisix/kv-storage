@@ -55,6 +55,7 @@ const client = new KVStorage({
   maxConcurrentStreams: 100,         // HTTP/2 streams (default)
   sessionTimeout: 60000,            // Idle session timeout ms (default)
   rejectUnauthorized: true,          // TLS verification (default)
+  sslFingerprint: 'AB:CD:EF:...',    // Certificate pinning (optional)
 });
 ```
 
@@ -162,6 +163,52 @@ await Promise.all(promises);
 
 client.close();
 ```
+
+### TLS/SSL with Certificate Pinning
+
+For HTTPS endpoints, you can enable certificate fingerprint pinning to protect against
+man-in-the-middle attacks:
+
+```typescript
+const client = new KVStorage({
+  endpoint: 'https://localhost:3000',
+  token: 'secret',
+  sslFingerprint: 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89'
+});
+```
+
+#### Getting the Server Certificate Fingerprint
+
+From your server's certificate file:
+
+```bash
+# Get SHA-256 fingerprint (with colons)
+openssl x509 -in cert.pem -noout -fingerprint -sha256
+
+
+# Convert to lowercase hex without colons (optional format)
+openssl x509 -in cert.pem -noout -fingerprint -sha256 | cut -d= -f2 | tr -d : | tr '[:upper:]' '[:lower:]'
+```
+
+Or directly from a running HTTPS server:
+
+```bash
+# Get fingerprint from running server (requires --insecure for self-signed)
+openssl s_client -connect localhost:3000 -servername localhost 2>/dev/null | \
+  openssl x509 -noout -fingerprint -sha256
+```
+
+The `sslFingerprint` option accepts either format:
+- With colons: `'AB:CD:EF:01:23...'` (standard openssl output)
+- Without colons: `'abcdef0123456789...'` (clean hex string)
+
+When set, the client will:
+1. Skip standard CA certificate verification
+2. Verify that the server's certificate SHA-256 fingerprint matches exactly
+3. Reject connections with mismatched certificates
+
+This is especially useful for self-signed certificates or environments where
+you want to pin to a specific certificate rather than trusting a CA.
 
 ### Binary Files
 

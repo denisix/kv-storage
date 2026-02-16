@@ -1,4 +1,4 @@
-.PHONY: all build dev test release clean run docker-build docker-run help
+.PHONY: all build dev test release clean run docker-build docker-run help test-tls
 
 # Default target
 all: build
@@ -32,6 +32,11 @@ test-unit:
 test-integration:
 	@echo "Running integration tests..."
 	cargo test --test integration_test
+
+# Run TLS integration tests (generates self-signed cert)
+test-tls:
+	@echo "Running TLS integration tests..."
+	cargo test --test tls_integration_test
 
 # Build release binary
 release:
@@ -165,6 +170,7 @@ help:
 	@echo "  test-verbose   - Run all tests with output"
 	@echo "  test-unit      - Run only unit tests"
 	@echo "  test-integration - Run integration tests"
+	@echo "  test-tls       - Run TLS integration tests (generates self-signed cert)"
 	@echo "  release        - Build release binary"
 	@echo "  run            - Build and run release binary"
 	@echo "  run-dev        - Run with test-token on port 3000"

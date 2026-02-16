@@ -9,6 +9,7 @@ import { KVStorage } from './index.js';
 
 const TEST_ENDPOINT = process.env.TEST_ENDPOINT || 'http://127.0.0.1:3456';
 const TEST_TOKEN = process.env.TEST_TOKEN || 'test-token';
+const USE_HTTPS = TEST_ENDPOINT.startsWith('https://');
 
 let passed = 0;
 let failed = 0;
@@ -380,6 +381,80 @@ async function main() {
       await client.delete(key);
     }
 
+    client.close();
+  });
+
+
+  // Test sslFingerprint option is accepted with https:// endpoint
+  await runTest('sslFingerprint with https:// does not throw at construction', async () => {
+    // This should not throw when constructing
+    const client = new KVStorage({
+      endpoint: 'https://localhost:3000',
+      token: TEST_TOKEN,
+      sslFingerprint: '0E:2D:B3:49:A3:5B:4A:92:2A:29:2E:7B:82:DF:30:E6:FE:70:2B:1D:2E:3F:7D:28:4B:89:C4:AB:AB:F9:1A:7B',
+    });
+    // Client is constructed, we don't attempt connection since no TLS server is running
+    client.close();
+  });
+
+  // Test sslFingerprint pinning with actual connection (requires HTTPS endpoint + TEST_SSL_FINGERPRINT)
+  if (USE_HTTPS && process.env.TEST_SSL_FINGERPRINT) {
+    await runTest('sslFingerprint pinning succeeds with correct fingerprint', async () => {
+      const client = new KVStorage({
+        endpoint: TEST_ENDPOINT,
+        token: TEST_TOKEN,
+        timeout: 5000,
+        sslFingerprint: process.env.TEST_SSL_FINGERPRINT,
+      });
+
+      const result = await client.put('test:fingerprint', 'pinned');
+      if (typeof result.hash !== 'string' || result.hash.length === 0) {
+        throw new Error('PUT with fingerprint pinning should succeed');
+      }
+
+      const value = await client.get('test:fingerprint');
+      if (value !== 'pinned') {
+        throw new Error(`Expected "pinned" but got "${value}"`);
+      }
+
+      await client.delete('test:fingerprint');
+      client.close();
+    });
+
+    await runTest('sslFingerprint pinning rejects wrong fingerprint', async () => {
+      const client = new KVStorage({
+        endpoint: TEST_ENDPOINT,
+        token: TEST_TOKEN,
+        timeout: 5000,
+        sslFingerprint: 'FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF',
+      });
+
+      let rejected = false;
+      try {
+        await client.put('test:bad-fp', 'should-fail');
+      } catch (error: any) {
+        if (error.message.includes('fingerprint mismatch') || error.message.includes('self-signed') || error.message.includes('canceled')) {
+          rejected = true;
+        } else {
+          // Any connection error is acceptable — wrong fingerprint should cause rejection
+          rejected = true;
+        }
+      }
+      client.close();
+
+      if (!rejected) {
+        throw new Error('Wrong fingerprint should cause connection rejection');
+      }
+    });
+  }
+
+  // Test rejectUnauthorized is respected without fingerprint
+  await runTest('rejectUnauthorized option is accepted', async () => {
+    const client = new KVStorage({
+      endpoint: 'https://localhost:3000',
+      token: TEST_TOKEN,
+      rejectUnauthorized: false,
+    });
     client.close();
   });
 

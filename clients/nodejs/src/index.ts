@@ -5,6 +5,7 @@
  */
 
 import http2 from 'node:http2';
+import type { TLSSocket } from 'node:tls';
 import { URL } from 'node:url';
 import type { ClientSessionOptions, SecureClientSessionOptions, IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http2';
 
@@ -79,6 +80,14 @@ export interface KVStorageOptions {
    * Enable TLS verification (default: true)
    */
   rejectUnauthorized?: boolean;
+  /**
+   * SHA-256 fingerprint of the server's TLS certificate for pinning.
+   * Format: colon-separated hex pairs (e.g. "AA:BB:CC:...").
+   * When set, the client verifies the server certificate fingerprint
+   * and rejects connections that don't match, even for self-signed certs.
+   * Only valid with https:// endpoints.
+   */
+  sslFingerprint?: string;
 }
 
 interface RequestResult {
@@ -96,35 +105,56 @@ class HTTP2Session {
   private lastUsed: number;
   private sessionTimeout: number;
   private idleTimer: ReturnType<typeof setInterval>;
-
+  private fingerprintError: Error | null = null;
   constructor(
     authority: string,
     options: {
       maxConcurrentStreams?: number;
       rejectUnauthorized?: boolean;
       sessionTimeout?: number;
+      sslFingerprint?: string;
     }
   ) {
     this.url = new URL(authority);
     this.sessionTimeout = options.sessionTimeout || 60000;
     this.lastUsed = Date.now();
-
     const isHttps = this.url.protocol === 'https:';
-
     if (isHttps) {
       const tlsOptions: SecureClientSessionOptions = {};
-      if (options.rejectUnauthorized !== undefined) {
+      if (options.sslFingerprint) {
+        // Fingerprint pinning: disable CA verification (to allow self-signed),
+        // then verify the certificate fingerprint after TLS handshake.
+        tlsOptions.rejectUnauthorized = false;
+      } else if (options.rejectUnauthorized !== undefined) {
         tlsOptions.rejectUnauthorized = options.rejectUnauthorized;
       }
       this.client = http2.connect(authority, tlsOptions);
+      if (options.sslFingerprint) {
+        const expectedFp = options.sslFingerprint.replace(/:/g, '').toLowerCase();
+        this.client.on('connect', () => {
+          const socket = this.client.socket as TLSSocket;
+          if (socket && typeof socket.getPeerCertificate === 'function') {
+            const cert = socket.getPeerCertificate();
+            const actualFp = (cert.fingerprint256 || '').replace(/:/g, '').toLowerCase();
+            if (actualFp !== expectedFp) {
+              this.fingerprintError = new Error(
+                `Certificate fingerprint mismatch: expected ${options.sslFingerprint}, got ${cert.fingerprint256 || 'unknown'}`
+              );
+              this.client.destroy();
+            }
+          }
+        });
+      }
     } else {
+      if (options.sslFingerprint) {
+        throw new Error('sslFingerprint requires an https:// endpoint');
+      }
       this.client = http2.connect(authority);
     }
-
     this.client.on('error', (_err: Error) => {
-      // Session error - will be handled at request level
+      // Session error - mark as destroyed so it gets recreated
+      this.client.destroy();
     });
-
     // Set up timeout to close idle sessions
     this.idleTimer = setInterval(() => {
       if (Date.now() - this.lastUsed > this.sessionTimeout) {
@@ -142,6 +172,10 @@ class HTTP2Session {
     timeout: number
   ): Promise<RequestResult> {
     return new Promise((resolve, reject) => {
+      if (this.fingerprintError) {
+        reject(this.fingerprintError);
+        return;
+      }
       this.lastUsed = Date.now();
 
       const reqHeaders: OutgoingHttpHeaders = {

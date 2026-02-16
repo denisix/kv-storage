@@ -154,10 +154,49 @@ let config = ClientConfig {
     timeout_ms: 60000,        // 60 second timeout
     max_concurrent_streams: 200,
     session_timeout_ms: 120000, // 2 minute session timeout
+    ssl_fingerprint: Some("AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89".to_string()), // Certificate pinning (optional)
+    reject_unauthorized: true, // TLS verification (default)
 };
 
 let client = Client::with_config(config)?;
 ```
+
+### TLS/SSL with Certificate Pinning
+
+For HTTPS endpoints, you can enable certificate fingerprint pinning:
+
+```rust
+use kv_storage_client::{Client, ClientConfig};
+
+let config = ClientConfig {
+    endpoint: "https://localhost:3000".to_string(),
+    token: "your-token".to_string(),
+    ssl_fingerprint: Some("AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89".to_string()),
+    ..Default::default()
+};
+
+let client = Client::with_config(config)?;
+```
+
+#### Getting the Server Certificate Fingerprint
+
+```bash
+# Get SHA-256 fingerprint from certificate file
+openssl x509 -in cert.pem -noout -fingerprint -sha256
+# Convert to lowercase hex without colons
+openssl x509 -in cert.pem -noout -fingerprint -sha256 | cut -d= -f2 | tr -d : | tr '[:upper:]' '[:lower:]'
+```
+
+#### Fingerprint Format
+
+The `ssl_fingerprint` field accepts either format:
+- With colons: `"AB:CD:EF:01:23..."` 
+- Without colons: `"abcdef0123456789..."`
+
+When set, the client will verify the server's certificate SHA-256 fingerprint
+exactly, bypassing standard CA certificate verification. This provides protection
+against man-in-the-middle attacks and is especially useful for self-signed
+certificates.
 
 ## API Reference
 
