@@ -410,3 +410,189 @@ fn test_tls_server_list_keys() {
     let _ = make_tls_request("DELETE", &url1, "test-token", None);
     let _ = make_tls_request("DELETE", &url2, "test-token", None);
 }
+
+#[test]
+fn test_tls_server_rejects_plaintext_h2c() {
+    // When TLS is enabled, the server should not accept plaintext h2c connections
+    let tmp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let db_dir = tmp_dir.path().join("db");
+    std::fs::create_dir_all(&db_dir).unwrap();
+
+    let (cert_path, key_path, _fingerprint) = generate_self_signed_cert(tmp_dir.path());
+    let port = 13450;
+
+    let child = start_tls_server(&cert_path, &key_path, port, db_dir.to_str().unwrap());
+    let mut _server = TestServer { child };
+
+    assert!(wait_for_server(&mut _server.child, port, Duration::from_secs(10)), "Server failed to start");
+
+    // Try to connect with plaintext HTTP/2 (h2c) - should fail
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .http2_prior_knowledge()  // Force h2c without HTTP/2 upgrade
+        .build()
+        .unwrap();
+
+    let result = client
+        .get(format!("http://127.0.0.1:{}/test_key", port))
+        .header("Authorization", "Bearer test-token")
+        .send();
+
+    // Should fail to connect since server only accepts TLS
+    assert!(result.is_err(), "Plaintext h2c should be rejected when TLS is enabled");
+}
+
+#[test]
+fn test_tls_server_large_payload() {
+    let tmp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let db_dir = tmp_dir.path().join("db");
+    std::fs::create_dir_all(&db_dir).unwrap();
+
+    let (cert_path, key_path, _fingerprint) = generate_self_signed_cert(tmp_dir.path());
+    let port = 13451;
+
+    let child = start_tls_server(&cert_path, &key_path, port, db_dir.to_str().unwrap());
+    let mut _server = TestServer { child };
+
+    assert!(wait_for_server(&mut _server.child, port, Duration::from_secs(10)), "Server failed to start");
+
+    // Store a large payload (1MB)
+    let large_data = vec![42u8; 1024 * 1024];
+    let url = format!("https://127.0.0.1:{}/tls_large_test", port);
+    let (_, status) = make_tls_request("PUT", &url, "test-token", Some(&large_data))
+        .expect("PUT large payload failed");
+    assert!(status == reqwest::StatusCode::CREATED || status == reqwest::StatusCode::OK);
+
+    // Retrieve and verify
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .danger_accept_invalid_certs(true)
+        .use_rustls_tls()
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&url)
+        .header("Authorization", "Bearer test-token")
+        .send()
+        .expect("GET large payload failed");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let bytes = response.bytes().unwrap();
+    assert_eq!(bytes.len(), 1024 * 1024);
+    assert!(bytes.iter().all(|&b| b == 42));
+
+    // Cleanup
+    let _ = make_tls_request("DELETE", &url, "test-token", None);
+}
+
+#[test]
+fn test_tls_server_multiple_concurrent_connections() {
+    let tmp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let db_dir = tmp_dir.path().join("db");
+    std::fs::create_dir_all(&db_dir).unwrap();
+
+    let (cert_path, key_path, _fingerprint) = generate_self_signed_cert(tmp_dir.path());
+    let port = 13452;
+
+    let child = start_tls_server(&cert_path, &key_path, port, db_dir.to_str().unwrap());
+    let mut _server = TestServer { child };
+
+    assert!(wait_for_server(&mut _server.child, port, Duration::from_secs(10)), "Server failed to start");
+
+    use std::thread;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let success_count = Arc::new(AtomicUsize::new(0));
+    let mut handles = vec![];
+
+    for i in 0..10 {
+        let port = port.clone();
+        let counter = success_count.clone();
+        handles.push(thread::spawn(move || {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .danger_accept_invalid_certs(true)
+                .use_rustls_tls()
+                .build()
+                .unwrap();
+
+            let url = format!("https://127.0.0.1:{}/tls_concurrent_{}", port, i);
+            let response = client
+                .put(&url)
+                .header("Authorization", "Bearer test-token")
+                .body(format!("value_{}", i))
+                .send();
+
+            if response.map(|r| r.status().is_success()).unwrap_or(false) {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    assert_eq!(success_count.load(Ordering::SeqCst), 10, "All concurrent TLS connections should succeed");
+
+    // Cleanup
+    for i in 0..10 {
+        let url = format!("https://127.0.0.1:{}/tls_concurrent_{}", port, i);
+        let _ = make_tls_request("DELETE", &url, "test-token", None);
+    }
+}
+
+#[test]
+fn test_tls_server_connection_reuse() {
+    // Test that TLS connections can be reused for multiple requests
+    let tmp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let db_dir = tmp_dir.path().join("db");
+    std::fs::create_dir_all(&db_dir).unwrap();
+
+    let (cert_path, key_path, _fingerprint) = generate_self_signed_cert(tmp_dir.path());
+    let port = 13453;
+
+    let child = start_tls_server(&cert_path, &key_path, port, db_dir.to_str().unwrap());
+    let mut _server = TestServer { child };
+
+    assert!(wait_for_server(&mut _server.child, port, Duration::from_secs(10)), "Server failed to start");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .danger_accept_invalid_certs(true)
+        .use_rustls_tls()
+        .http2_prior_knowledge()
+        .build()
+        .unwrap();
+
+    // Make multiple requests over the same connection
+    for i in 0..20 {
+        let url = format!("https://127.0.0.1:{}/tls_reuse_{}", port, i);
+        let response = client
+            .put(&url)
+            .header("Authorization", "Bearer test-token")
+            .body(format!("value_{}", i))
+            .send()
+            .expect("PUT failed");
+
+        assert!(response.status().is_success(), "Request {} should succeed", i);
+    }
+
+    // Verify all exist
+    for i in 0..20 {
+        let url = format!("https://127.0.0.1:{}/tls_reuse_{}", port, i);
+        let response = client
+            .get(&url)
+            .header("Authorization", "Bearer test-token")
+            .send()
+            .expect("GET failed");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let text = response.text().unwrap();
+        assert_eq!(text, format!("value_{}", i));
+
+        let _ = make_tls_request("DELETE", &url, "test-token", None);
+    }
+}

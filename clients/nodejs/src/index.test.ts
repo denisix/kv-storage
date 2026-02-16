@@ -477,6 +477,225 @@ async function main() {
     client.close();
   });
 
+  // Test CONCURRENT operations
+  await runTest('CONCURRENT operations', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 10000,
+    });
+
+    const promises = [];
+    for (let i = 0; i < 10; i++) {
+      promises.push((async () => {
+        const key = `test:concurrent:${i}`;
+        await ensureClean(client, [key]);
+        await client.put(key, `value_${i}`);
+        const value = await client.get(key);
+        if (value !== `value_${i}`) {
+          throw new Error(`Concurrent op ${i} failed`);
+        }
+        await client.delete(key);
+      })());
+    }
+
+    await Promise.all(promises);
+    client.close();
+  });
+
+  // Test LARGE binary data
+  await runTest('LARGE binary data (1MB)', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 30000,
+    });
+
+    await ensureClean(client, ['test:large:binary']);
+
+    // 1MB of binary data
+    const largeData = Buffer.alloc(1024 * 1024, 42);
+    await client.put('test:large:binary', largeData);
+    
+    const retrieved = await client.get('test:large:binary', 'binary');
+    if (!Buffer.isBuffer(retrieved)) {
+      throw new Error('Expected Buffer');
+    }
+    if (retrieved.length !== 1024 * 1024) {
+      throw new Error(`Expected 1MB, got ${retrieved.length} bytes`);
+    }
+    if (!retrieved.every(b => b === 42)) {
+      throw new Error('Data corruption detected');
+    }
+
+    await client.delete('test:large:binary');
+    client.close();
+  });
+
+  // Test EMPTY value
+  await runTest('EMPTY value', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 5000,
+    });
+
+    await ensureClean(client, ['test:empty:value']);
+
+    await client.put('test:empty:value', '');
+    const value = await client.get('test:empty:value');
+    if (value !== '') {
+      throw new Error(`Expected empty string, got "${value}"`);
+    }
+
+    await client.delete('test:empty:value');
+    client.close();
+  });
+
+  // Test SESSION REUSE
+  await runTest('SESSION reuse across multiple requests', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 5000,
+    });
+
+    // Make 10 sequential requests - should reuse the same HTTP/2 session
+    for (let i = 0; i < 10; i++) {
+      const key = `test:session:${i}`;
+      await ensureClean(client, [key]);
+      await client.put(key, `session_value_${i}`);
+      const value = await client.get(key);
+      if (value !== `session_value_${i}`) {
+        throw new Error(`Session reuse test failed at iteration ${i}`);
+      }
+      await client.delete(key);
+    }
+
+    client.close();
+  });
+
+  // Test BATCH with many operations
+  await runTest('BATCH with many operations (50)', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 10000,
+    });
+
+    const ops = [];
+    const keys = [];
+    for (let i = 0; i < 50; i++) {
+      const key = `test:batch:many:${i}`;
+      keys.push(key);
+      ops.push({ op: 'put' as const, key, value: `batch_val_${i}` });
+    }
+
+    // Clean up first
+    await cleanup(client, keys);
+
+    const response = await client.batch(ops);
+    if (!response.results || response.results.length !== 50) {
+      throw new Error(`Expected 50 results, got ${response.results?.length}`);
+    }
+
+    // Verify all values exist
+    for (let i = 0; i < 50; i++) {
+      const value = await client.get(keys[i]);
+      if (value !== `batch_val_${i}`) {
+        throw new Error(`Batch verification failed at index ${i}`);
+      }
+    }
+
+    await cleanup(client, keys);
+    client.close();
+  });
+
+  // Test KEY with emoji
+  await runTest('PUT and GET key with emoji', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 5000,
+    });
+
+    const keys = [
+      'test_🔑_key',
+      'test_🎉_party',
+      'test_hello_🌍_world',
+    ];
+
+    for (const key of keys) {
+      await ensureClean(client, [key]);
+
+      const data = `data for ${key}`;
+      const result = await client.put(key, data);
+      if (typeof result.hash !== 'string') {
+        throw new Error(`PUT failed for key "${key}"`);
+      }
+
+      const value = await client.get(key);
+      if (value !== data) {
+        throw new Error(`GET mismatch for key "${key}"`);
+      }
+
+      await client.delete(key);
+    }
+
+    client.close();
+  });
+
+  // Test KEY with newlines (encoded)
+  await runTest('PUT and GET key with newlines', async () => {
+    const client = new KVStorage({
+      endpoint: TEST_ENDPOINT,
+      token: TEST_TOKEN,
+      timeout: 5000,
+    });
+
+    const key = 'test\nwith\nnewlines';
+    await ensureClean(client, [key]);
+
+    const result = await client.put(key, 'newline data');
+    if (typeof result.hash !== 'string') {
+      throw new Error('PUT with newline key failed');
+    }
+
+    const value = await client.get(key);
+    if (value !== 'newline data') {
+      throw new Error('GET mismatch for newline key');
+    }
+
+    await client.delete(key);
+    client.close();
+  });
+
+  // Test CONNECTION ERROR handling
+  await runTest('Connection error handling', async () => {
+    const client = new KVStorage({
+      endpoint: 'http://127.0.0.1:59999', // Non-existent server
+      token: TEST_TOKEN,
+      timeout: 2000,
+    });
+
+    let caughtError = false;
+    try {
+      await client.get('test:connection:error');
+    } catch (error: any) {
+      caughtError = true;
+      // Should have a meaningful error message
+      if (!error.message.includes('connect') && !error.message.includes('ECONNREFUSED') && !error.message.includes('Failed to connect')) {
+        throw new Error(`Unexpected error message: ${error.message}`);
+      }
+    }
+
+    if (!caughtError) {
+      throw new Error('Should have thrown connection error');
+    }
+
+    client.close();
+  });
+
   // Summary
   log('\n' + '='.repeat(50));
   log(`Tests passed: ${passed}`);

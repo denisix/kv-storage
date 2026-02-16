@@ -38,6 +38,22 @@ test-tls:
 	@echo "Running TLS integration tests..."
 	cargo test --test tls_integration_test
 
+# Run Rust client tests (requires running server)
+test-rust-client:
+	@echo "Running Rust client tests..."
+	cd clients/rust && cargo test --tests
+
+# Run Node.js client tests (requires running server)
+test-node-client:
+	@echo "Running Node.js client tests..."
+	cd clients/nodejs && npm test
+
+# Run all client tests (requires running server)
+test-clients: test-rust-client test-node-client
+
+# Run all tests including clients (requires running server)
+test-all: test test-integration test-tls test-clients
+
 # Build release binary
 release:
 	@echo "Building release..."
@@ -171,6 +187,10 @@ help:
 	@echo "  test-unit      - Run only unit tests"
 	@echo "  test-integration - Run integration tests"
 	@echo "  test-tls       - Run TLS integration tests (generates self-signed cert)"
+	@echo "  test-rust-client - Run Rust client tests (requires running server)"
+	@echo "  test-node-client - Run Node.js client tests (requires running server)"
+	@echo "  test-clients   - Run all client tests (requires running server)"
+	@echo "  test-all       - Run all tests including clients (requires running server)"
 	@echo "  release        - Build release binary"
 	@echo "  run            - Build and run release binary"
 	@echo "  run-dev        - Run with test-token on port 3000"

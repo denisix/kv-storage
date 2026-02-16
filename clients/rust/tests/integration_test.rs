@@ -306,3 +306,233 @@ async fn test_keys_with_hash_and_question_mark() {
         assert!(deleted, "DELETE failed for key: {}", key);
     }
 }
+
+// ========== Concurrent Operations Tests ==========
+
+#[tokio::test]
+async fn test_concurrent_operations() {
+    let client = get_client();
+    let mut handles = vec![];
+
+    // Spawn 20 concurrent PUT operations
+    for i in 0..20 {
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            let key = get_test_key(&format!("concurrent_{}", i));
+            let result = client.put(&key, format!("value_{}", i).as_bytes()).await;
+            (i, result, key)
+        }));
+    }
+
+    // Wait for all to complete
+    let mut results = vec![];
+    for handle in handles {
+        results.push(handle.await.unwrap());
+    }
+
+    // All should succeed
+    for (i, result, key) in results {
+        assert!(result.is_ok(), "Request {} should succeed", i);
+        cleanup(&client, &[&key]).await;
+    }
+}
+
+#[tokio::test]
+async fn test_concurrent_read_write_same_key() {
+    let client = get_client();
+    let key = get_test_key("concurrent_rw");
+
+    cleanup(&client, &[&key]).await;
+
+    // Initial write
+    client.put(&key, b"initial").await.unwrap();
+
+    // Spawn concurrent readers and writers
+    let mut handles = vec![];
+    for i in 0..10 {
+        let client = client.clone();
+        let key = key.clone();
+        handles.push(tokio::spawn(async move {
+            if i % 2 == 0 {
+                // Writer
+                let _ = client.put(&key, format!("value_{}", i).as_bytes()).await;
+            } else {
+                // Reader
+                let _ = client.get(&key).await;
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    // Key should still exist with some value
+    let value = client.get(&key).await.unwrap();
+    assert!(value.is_some());
+
+    cleanup(&client, &[&key]).await;
+}
+
+// ========== Large Data Tests ==========
+
+#[tokio::test]
+async fn test_large_value() {
+    let client = get_client();
+    let key = get_test_key("large_value");
+
+    cleanup(&client, &[&key]).await;
+
+    // 1MB of data
+    let large_data = vec![42u8; 1024 * 1024];
+    
+    let result = client.put(&key, &large_data).await.unwrap();
+    assert!(!result.hash.is_empty());
+
+    let value = client.get(&key).await.unwrap();
+    assert_eq!(value, Some(large_data));
+
+    cleanup(&client, &[&key]).await;
+}
+
+#[tokio::test]
+async fn test_binary_data_full_range() {
+    let client = get_client();
+    let key = get_test_key("binary_full");
+
+    cleanup(&client, &[&key]).await;
+
+    // All byte values 0-255
+    let binary_data: Vec<u8> = (0..=255).collect();
+    
+    client.put(&key, &binary_data).await.unwrap();
+
+    let value = client.get(&key).await.unwrap();
+    assert_eq!(value, Some(binary_data));
+
+    cleanup(&client, &[&key]).await;
+}
+
+// ========== Batch Operation Edge Cases ==========
+
+#[tokio::test]
+async fn test_batch_empty() {
+    let client = get_client();
+    
+    let response = client.batch(vec![]).await.unwrap();
+    assert!(response.results.is_empty());
+}
+
+#[tokio::test]
+async fn test_batch_get_nonexistent() {
+    let client = get_client();
+    let key = get_test_key("batch_nonexistent");
+
+    cleanup(&client, &[&key]).await;
+
+    // Batch with GET for non-existent key
+    let ops = vec![BatchOp::Get { key: key.clone() }];
+    let response = client.batch(ops).await.unwrap();
+    
+    assert_eq!(response.results.len(), 1);
+    match &response.results[0] {
+        kv_storage_client::BatchResult::Get { found, .. } => assert!(!*found),
+        _ => panic!("Expected Get result"),
+    }
+}
+
+#[tokio::test]
+async fn test_batch_mixed_success_and_failure() {
+    let client = get_client();
+    let existing_key = get_test_key("batch_existing");
+    let new_key = get_test_key("batch_new");
+
+    cleanup(&client, &[&existing_key, &new_key]).await;
+
+    // Create existing key
+    client.put(&existing_key, b"existing").await.unwrap();
+
+    // Batch with PUT, GET existing, DELETE
+    let ops = vec![
+        BatchOp::Put { key: new_key.clone(), value: "new_value".to_string() },
+        BatchOp::Get { key: existing_key.clone() },
+        BatchOp::Delete { key: existing_key.clone() },
+    ];
+
+    let response = client.batch(ops).await.unwrap();
+    assert_eq!(response.results.len(), 3);
+
+    // Verify DELETE worked
+    let value = client.get(&existing_key).await.unwrap();
+    assert!(value.is_none());
+
+    // Verify PUT worked
+    let value = client.get(&new_key).await.unwrap();
+    assert_eq!(value, Some(b"new_value".to_vec()));
+
+    cleanup(&client, &[&new_key]).await;
+}
+
+// ========== Session Management Tests ==========
+
+#[tokio::test]
+async fn test_client_clone_shares_connection() {
+    let client = get_client();
+    let client2 = client.clone();
+
+    let key1 = get_test_key("clone_1");
+    let key2 = get_test_key("clone_2");
+
+    cleanup(&client, &[&key1, &key2]).await;
+
+    // Use both clients concurrently
+    let handle1 = tokio::spawn(async move {
+        client.put(&key1, b"value1").await.unwrap();
+        client.get(&key1).await.unwrap()
+    });
+
+    let handle2 = tokio::spawn(async move {
+        client2.put(&key2, b"value2").await.unwrap();
+        client2.get(&key2).await.unwrap()
+    });
+
+    let result1 = handle1.await.unwrap();
+    let result2 = handle2.await.unwrap();
+
+    assert_eq!(result1, Some(b"value1".to_vec()));
+    assert_eq!(result2, Some(b"value2".to_vec()));
+}
+
+// ========== Key Edge Cases ==========
+
+#[tokio::test]
+async fn test_key_with_newline_encoded() {
+    let client = get_client();
+    // Newlines in keys should be percent-encoded
+    let key = "rust_test\nwith\nnewlines";
+
+    cleanup(&client, &[key]).await;
+
+    let data = b"data with newlines in key";
+    client.put(key, data).await.unwrap();
+
+    let value = client.get(key).await.unwrap();
+    assert_eq!(value, Some(data.to_vec()));
+
+    cleanup(&client, &[key]).await;
+}
+
+#[tokio::test]
+async fn test_very_long_key() {
+    let client = get_client();
+    // Long key (but under 256KB limit)
+    let key = "x".repeat(1000);
+
+    cleanup(&client, &[&key]).await;
+
+    client.put(&key, b"long key data").await.unwrap();
+    let value = client.get(&key).await.unwrap();
+    assert_eq!(value, Some(b"long key data".to_vec()));
+
+    cleanup(&client, &[&key]).await;
+}

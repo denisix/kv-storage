@@ -611,3 +611,282 @@ fn test_empty_key_returns_error() {
     let (_, status) = make_auth_request("PUT", "/", Some(b"data")).unwrap();
     assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
 }
+
+// ========== Concurrency Tests ==========
+
+#[test]
+fn test_concurrent_puts_same_key() {
+    // Test that concurrent PUTs to the same key don't cause race conditions
+    use std::thread;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    
+    let (base_url, token) = get_config();
+    let success_count = Arc::new(AtomicUsize::new(0));
+    let mut handles = vec![];
+    
+    // Clean up first
+    let _ = make_auth_request("DELETE", "/concurrent_test_key", None);
+    
+    for i in 0..5 {
+        let url = base_url.clone();
+        let tok = token.clone();
+        let counter = success_count.clone();
+        handles.push(thread::spawn(move || {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap();
+            let response = client
+                .put(format!("{}/concurrent_test_key", url))
+                .header("Authorization", format!("Bearer {}", tok))
+                .body(format!("value_{}", i))
+                .send()
+                .unwrap();
+            if response.status().is_success() {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+    }
+    
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    
+    // All requests should succeed (some creating, some updating)
+    assert_eq!(success_count.load(Ordering::SeqCst), 5);
+    
+    // Cleanup
+    let _ = make_auth_request("DELETE", "/concurrent_test_key", None);
+}
+
+#[test]
+fn test_concurrent_puts_different_keys() {
+    use std::thread;
+    
+    let (base_url, token) = get_config();
+    let mut handles = vec![];
+    
+    for i in 0..10 {
+        let url = base_url.clone();
+        let tok = token.clone();
+        handles.push(thread::spawn(move || {
+            let client = reqwest::blocking::Client::new();
+            let response = client
+                .put(format!("{}/concurrent_diff_key_{}", url, i))
+                .header("Authorization", format!("Bearer {}", tok))
+                .body(format!("value_{}", i))
+                .send()
+                .unwrap();
+            assert!(response.status().is_success());
+        }));
+    }
+    
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    
+    // Verify all keys exist
+    for i in 0..10 {
+        let (value, status) = make_auth_request("GET", &format!("/concurrent_diff_key_{}", i), None).unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert_eq!(value, format!("value_{}", i));
+        let _ = make_auth_request("DELETE", &format!("/concurrent_diff_key_{}", i), None);
+    }
+}
+
+// ========== Batch Validation Tests ==========
+
+#[test]
+fn test_batch_empty_array() {
+    let (base_url, token) = get_config();
+    let client = reqwest::blocking::Client::new();
+    
+    let response = client
+        .post(format!("{}/batch", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body("[]")
+        .send()
+        .unwrap();
+    
+    // Empty batch should succeed with empty results
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let json: serde_json::Value = response.json().unwrap();
+    assert!(json["results"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn test_batch_invalid_operation() {
+    let (base_url, token) = get_config();
+    let client = reqwest::blocking::Client::new();
+    
+    let batch_ops = r#"[
+        {"op": "invalid_op", "key": "test"}
+    ]"#;
+    
+    let response = client
+        .post(format!("{}/batch", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(batch_ops)
+        .send()
+        .unwrap();
+    
+    // Should return an error for the invalid operation
+    assert!(response.status().is_client_error() || response.status().is_server_error());
+}
+
+#[test]
+fn test_batch_missing_key() {
+    let (base_url, token) = get_config();
+    let client = reqwest::blocking::Client::new();
+    
+    let batch_ops = r#"[
+        {"op": "get"}
+    ]"#;
+    
+    let response = client
+        .post(format!("{}/batch", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(batch_ops)
+        .send()
+        .unwrap();
+    
+    // Should return an error for missing key
+    assert!(response.status().is_client_error() || response.status().is_server_error());
+}
+
+#[test]
+fn test_batch_large_number_of_operations() {
+    let (base_url, token) = get_config();
+    let client = reqwest::blocking::Client::new();
+    
+    // Create 50 PUT operations
+    let ops: Vec<serde_json::Value> = (0..50)
+        .map(|i| serde_json::json!({"op": "put", "key": format!("batch_large_{}", i), "value": format!("val_{}", i)}))
+        .collect();
+    
+    let response = client
+        .post(format!("{}/batch", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&ops).unwrap())
+        .send()
+        .unwrap();
+    
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let json: serde_json::Value = response.json().unwrap();
+    assert_eq!(json["results"].as_array().unwrap().len(), 50);
+    
+    // Cleanup
+    for i in 0..50 {
+        let _ = make_auth_request("DELETE", &format!("/batch_large_{}", i), None);
+    }
+}
+
+// ========== Compression Tests ==========
+
+#[test]
+fn test_compressed_data_roundtrip() {
+    // Highly compressible data
+    let data: Vec<u8> = vec![42u8; 100_000]; // 100KB of same byte
+    
+    make_auth_request("PUT", "/compress_test", Some(&data)).unwrap();
+    
+    let (base_url, token) = get_config();
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .get(format!("{}/compress_test", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .unwrap();
+    
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let bytes = response.bytes().unwrap();
+    assert_eq!(bytes.len(), 100_000);
+    assert!(bytes.iter().all(|&b| b == 42));
+    
+    let _ = make_auth_request("DELETE", "/compress_test", None);
+}
+
+#[test]
+fn test_small_data_not_compressed() {
+    // Small data should be stored as-is
+    let data = b"small data";
+    
+    let (_, status) = make_auth_request("PUT", "/small_data_test", Some(data)).unwrap();
+    assert!(status.is_success());
+    
+    let (result, _) = make_auth_request("GET", "/small_data_test", None).unwrap();
+    assert_eq!(result.as_bytes(), data);
+    
+    let _ = make_auth_request("DELETE", "/small_data_test", None);
+}
+
+// ========== Content-Type Tests ==========
+
+#[test]
+fn test_put_binary_content_type() {
+    let (base_url, token) = get_config();
+    let client = reqwest::blocking::Client::new();
+    
+    let binary_data: Vec<u8> = (0..=255).collect();
+    
+    let response = client
+        .put(format!("{}/binary_content_test", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/octet-stream")
+        .body(binary_data.clone())
+        .send()
+        .unwrap();
+    
+    assert!(response.status().is_success());
+    
+    // Verify roundtrip
+    let response = client
+        .get(format!("{}/binary_content_test", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .unwrap();
+    
+    let retrieved = response.bytes().unwrap();
+    assert_eq!(retrieved.as_ref(), binary_data.as_slice());
+    
+    let _ = make_auth_request("DELETE", "/binary_content_test", None);
+}
+
+// ========== HTTP/2 Connection Tests ==========
+
+#[test]
+fn test_http2_multiplexing() {
+    // Test that HTTP/2 connection can handle multiple sequential requests efficiently
+    let (base_url, token) = get_config();
+    let client = reqwest::blocking::Client::builder()
+        .http2_prior_knowledge()
+        .build()
+        .unwrap();
+    
+    // Create multiple keys in sequence over the same connection
+    for i in 0..20 {
+        let response = client
+            .put(format!("{}/http2_mplex_{}", base_url, i))
+            .header("Authorization", format!("Bearer {}", token))
+            .body(format!("value_{}", i))
+            .send()
+            .unwrap();
+        assert!(response.status().is_success());
+    }
+    
+    // Verify all exist
+    for i in 0..20 {
+        let response = client
+            .get(format!("{}/http2_mplex_{}", base_url, i))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let _ = make_auth_request("DELETE", &format!("/http2_mplex_{}", i), None);
+    }
+}
