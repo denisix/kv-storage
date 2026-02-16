@@ -4,12 +4,14 @@ A modern HTTP/2 client library for interacting with the KV Storage server.
 
 ## Features
 
-- **HTTP/2 Support** - Full HTTP/2 support with connection pooling
+- **HTTP/2 Support** - Full HTTP/2 (h2c and h2) with connection pooling and multiplexing
+- **TLS/SSL** - HTTPS with standard CA verification, self-signed certs, or fingerprint pinning
 - **Async/Await** - Built on tokio for efficient async operations
 - **Type Safe** - Strongly typed API with comprehensive error handling
-- **Batch Operations** - Execute multiple operations atomically
+- **Batch Operations** - Execute multiple operations in a single request
 - **Binary & Text** - Support for both binary and string data
 - **Authentication** - Bearer token authentication
+- **Key Encoding** - Automatic percent-encoding for special characters, unicode, spaces
 
 ## Installation
 
@@ -17,7 +19,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kv-storage-client = "0.1"
+kv-storage-client = "0.1.2"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -76,6 +78,20 @@ client.delete("file:1").await?;
 if let Some(info) = client.head("file:1").await? {
     println!("Size: {} bytes", info.content_length);
 }
+```
+
+### Keys with Special Characters
+
+```rust
+use kv_storage_client::Client;
+
+let client = Client::new("http://localhost:3000", "your-token")?;
+
+// Keys are automatically percent-encoded
+client.put("my key with spaces", b"data").await?;
+client.put("path/to/file.txt", b"data").await?;
+client.put("ключ", b"data").await?;  // Unicode
+client.put("user:123", b"data").await?;  // Colons
 ```
 
 ### Batch Operations
@@ -143,27 +159,36 @@ println!("Metrics:\n{}", metrics);
 
 ## Configuration
 
-You can customize the client behavior:
-
 ```rust
 use kv_storage_client::{Client, ClientConfig};
 
 let config = ClientConfig {
     endpoint: "http://localhost:3000".to_string(),
     token: "your-token".to_string(),
-    timeout_ms: 60000,        // 60 second timeout
-    max_concurrent_streams: 200,
-    session_timeout_ms: 120000, // 2 minute session timeout
-    ssl_fingerprint: Some("AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89".to_string()), // Certificate pinning (optional)
-    reject_unauthorized: true, // TLS verification (default)
+    timeout_ms: 60000,           // Request timeout (default: 30000)
+    max_concurrent_streams: 200, // HTTP/2 concurrent streams (default: 100)
+    session_timeout_ms: 120000,  // Session timeout (default: 60000)
+    ssl_fingerprint: None,       // Certificate fingerprint pinning
+    reject_unauthorized: true,   // TLS verification (default: true)
 };
 
 let client = Client::with_config(config)?;
 ```
 
-### TLS/SSL with Certificate Pinning
+## TLS/SSL
 
-For HTTPS endpoints, you can enable certificate fingerprint pinning:
+### Standard HTTPS
+
+```rust
+use kv_storage_client::Client;
+
+// Uses system CA certificates for verification
+let client = Client::new("https://example.com:3000", "your-token")?;
+```
+
+### Self-Signed Certificates
+
+For development or testing with self-signed certificates:
 
 ```rust
 use kv_storage_client::{Client, ClientConfig};
@@ -171,52 +196,83 @@ use kv_storage_client::{Client, ClientConfig};
 let config = ClientConfig {
     endpoint: "https://localhost:3000".to_string(),
     token: "your-token".to_string(),
-    ssl_fingerprint: Some("AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89".to_string()),
+    reject_unauthorized: false, // Accept self-signed certificates
     ..Default::default()
 };
 
 let client = Client::with_config(config)?;
 ```
 
-#### Getting the Server Certificate Fingerprint
+**Warning:** `reject_unauthorized: false` disables all certificate verification. Use only for development.
+
+### Certificate Fingerprint Pinning
+
+For enhanced security with self-signed or custom certificates:
+
+```rust
+use kv_storage_client::{Client, ClientConfig};
+
+let config = ClientConfig {
+    endpoint: "https://localhost:3000".to_string(),
+    token: "your-token".to_string(),
+    ssl_fingerprint: Some(
+        "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:\
+         AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89".to_string()
+    ),
+    ..Default::default()
+};
+
+let client = Client::with_config(config)?;
+```
+
+#### Getting the Certificate Fingerprint
 
 ```bash
 # Get SHA-256 fingerprint from certificate file
 openssl x509 -in cert.pem -noout -fingerprint -sha256
+
 # Convert to lowercase hex without colons
 openssl x509 -in cert.pem -noout -fingerprint -sha256 | cut -d= -f2 | tr -d : | tr '[:upper:]' '[:lower:]'
 ```
 
-#### Fingerprint Format
-
 The `ssl_fingerprint` field accepts either format:
-- With colons: `"AB:CD:EF:01:23..."` 
-- Without colons: `"abcdef0123456789..."`
+- With colons: `"AB:CD:EF:01:23:45:..."`
+- Without colons: `"abcdef012345..."`
 
-When set, the client will verify the server's certificate SHA-256 fingerprint
-exactly, bypassing standard CA certificate verification. This provides protection
-against man-in-the-middle attacks and is especially useful for self-signed
-certificates.
+## Error Handling
+
+```rust
+use kv_storage_client::{Client, Error};
+
+match client.get("my-key").await {
+    Ok(Some(data)) => println!("Got data: {:?}", data),
+    Ok(None) => println!("Key not found"),
+    Err(Error::Unauthorized) => eprintln!("Invalid token"),
+    Err(Error::NotFound(key)) => eprintln!("Key not found: {}", key),
+    Err(Error::Timeout(ms)) => eprintln!("Request timed out after {}ms", ms),
+    Err(Error::Connection(msg)) => eprintln!("Connection error: {}", msg),
+    Err(Error::Tls(msg)) => eprintln!("TLS error: {}", msg),
+    Err(e) => eprintln!("Other error: {:?}", e),
+}
+```
+
+## Running Tests
+
+```bash
+# Unit tests (no server required)
+cargo test --lib
+
+# Integration tests (requires running server)
+TEST_ENDPOINT=http://localhost:3000 TEST_TOKEN=test-token cargo test --tests
+
+# TLS integration tests (requires HTTPS server)
+TEST_ENDPOINT=https://localhost:3000 TEST_TOKEN=test-token \
+cargo test --test tls_integration_test -- --test-threads=1
+```
 
 ## API Reference
 
 See the [documentation](https://docs.rs/kv-storage-client) for full API reference.
-
-## Running Examples
-
-The examples require a running KV Storage server:
-
-```bash
-# Start the server
-cd /path/to/kv-storage
-cargo run -- --token dev-token
-
-# Run basic usage example
-cargo run --example basic_usage
-
-# Run batch operations example
-cargo run --example batch_operations
-```
 
 ## License
 

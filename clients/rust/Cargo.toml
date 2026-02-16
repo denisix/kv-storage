@@ -1,6 +1,6 @@
 [package]
 name = "kv-storage-client"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 authors = ["denisix"]
 description = "A modern HTTP/2 client for the KV Storage server"

@@ -64,6 +64,10 @@ pub struct ClientConfig {
     /// Accepts hex with or without colons (e.g., "AB:CD:EF:..." or "abcdef...").
     /// Requires an https:// endpoint.
     pub ssl_fingerprint: Option<String>,
+    /// Enable TLS verification (default: true).
+    /// When false, the client accepts any certificate (useful for self-signed certs).
+    /// Only valid with https:// endpoints.
+    pub reject_unauthorized: bool,
 }
 
 impl Default for ClientConfig {
@@ -75,6 +79,7 @@ impl Default for ClientConfig {
             max_concurrent_streams: 100,
             session_timeout_ms: 60000,
             ssl_fingerprint: None,
+            reject_unauthorized: true,
         }
     }
 }
@@ -166,10 +171,71 @@ impl rustls::client::danger::ServerCertVerifier for FingerprintVerifier {
     }
 }
 
+/// Custom certificate verifier that accepts any certificate (insecure).
+/// Used when reject_unauthorized is false.
+struct InsecureVerifier {
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl fmt::Debug for InsecureVerifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InsecureVerifier").finish()
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for InsecureVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        // Accept any certificate
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 /// Build a rustls ClientConfig for TLS connections.
-fn build_tls_config(ssl_fingerprint: Option<&str>) -> Result<rustls::ClientConfig> {
+fn build_tls_config(ssl_fingerprint: Option<&str>, reject_unauthorized: bool) -> Result<rustls::ClientConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
 
+    // Priority: fingerprint > reject_unauthorized=false > standard CA verification
     if let Some(fp) = ssl_fingerprint {
         let expected = parse_fingerprint(fp)?;
         let verifier = Arc::new(FingerprintVerifier {
@@ -183,7 +249,20 @@ fn build_tls_config(ssl_fingerprint: Option<&str>) -> Result<rustls::ClientConfi
             .dangerous()
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth())
+    } else if !reject_unauthorized {
+        // Accept any certificate (insecure, for self-signed certs)
+        let verifier = Arc::new(InsecureVerifier {
+            provider: provider.clone(),
+        });
+
+        Ok(rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| Error::Tls(e.to_string()))?
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth())
     } else {
+        // Standard CA verification
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
@@ -220,6 +299,14 @@ type HttpsConnector = hyper_rustls::HttpsConnector<HttpConnector>;
 ///         endpoint: "https://localhost:3000".to_string(),
 ///         token: "your-token".to_string(),
 ///         ssl_fingerprint: Some("AB:CD:EF:...".to_string()),
+///         ..Default::default()
+///     })?;
+///
+///     // HTTPS with self-signed certificate (skip verification)
+///     let client = Client::with_config(kv_storage_client::ClientConfig {
+///         endpoint: "https://localhost:3000".to_string(),
+///         token: "your-token".to_string(),
+///         reject_unauthorized: false,
 ///         ..Default::default()
 ///     })?;
 ///
@@ -269,7 +356,7 @@ impl Client {
             ));
         }
 
-        let tls_config = build_tls_config(config.ssl_fingerprint.as_deref())?;
+        let tls_config = build_tls_config(config.ssl_fingerprint.as_deref(), config.reject_unauthorized)?;
 
         let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
             .with_tls_config(tls_config)
@@ -776,7 +863,7 @@ mod tests {
 
     #[test]
     fn test_build_tls_config_no_fingerprint() {
-        let config = build_tls_config(None);
+        let config = build_tls_config(None, true);
         assert!(config.is_ok(), "Default TLS config should succeed");
         let config = config.unwrap();
         // Default config uses ALPN h2
@@ -786,13 +873,13 @@ mod tests {
     #[test]
     fn test_build_tls_config_with_valid_fingerprint() {
         let fp = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-        let config = build_tls_config(Some(fp));
+        let config = build_tls_config(Some(fp), true);
         assert!(config.is_ok(), "TLS config with valid fingerprint should succeed");
     }
 
     #[test]
     fn test_build_tls_config_with_invalid_fingerprint() {
-        let result = build_tls_config(Some("invalid"));
+        let result = build_tls_config(Some("invalid"), true);
         assert!(result.is_err());
     }
 
@@ -965,6 +1052,64 @@ mod tests {
             expected: [0u8; 32],
             provider,
         };
+
+        let schemes = verifier.supported_verify_schemes();
+        assert!(!schemes.is_empty(), "Should support at least one signature scheme");
+    }
+
+    // ===== reject_unauthorized option tests =====
+
+    #[test]
+    fn test_client_config_default_reject_unauthorized() {
+        let config = ClientConfig::default();
+        assert!(config.reject_unauthorized, "reject_unauthorized should default to true");
+    }
+
+    #[test]
+    fn test_client_with_reject_unauthorized_false() {
+        let config = ClientConfig {
+            endpoint: "https://localhost:3000".to_string(),
+            token: "token".to_string(),
+            reject_unauthorized: false,
+            ..Default::default()
+        };
+        let result = Client::with_config(config);
+        assert!(result.is_ok(), "Should create client with reject_unauthorized=false");
+    }
+
+    #[test]
+    fn test_build_tls_config_insecure() {
+        let config = build_tls_config(None, false);
+        assert!(config.is_ok(), "TLS config with reject_unauthorized=false should succeed");
+    }
+
+    // ===== InsecureVerifier tests =====
+
+    #[test]
+    fn test_insecure_verifier_accepts_any_cert() {
+        use rustls::client::danger::ServerCertVerifier;
+        use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+
+        let cert_data = b"any certificate data";
+        let cert = CertificateDer::from(cert_data.to_vec());
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = InsecureVerifier { provider };
+
+        let server_name = ServerName::try_from("localhost").unwrap();
+        let now = UnixTime::now();
+
+        // Should accept any certificate
+        let result = verifier.verify_server_cert(&cert, &[], &server_name, &[], now);
+        assert!(result.is_ok(), "InsecureVerifier should accept any certificate");
+    }
+
+    #[test]
+    fn test_insecure_verifier_supported_schemes() {
+        use rustls::client::danger::ServerCertVerifier;
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = InsecureVerifier { provider };
 
         let schemes = verifier.supported_verify_schemes();
         assert!(!schemes.is_empty(), "Should support at least one signature scheme");
