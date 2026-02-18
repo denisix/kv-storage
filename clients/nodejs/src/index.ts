@@ -57,7 +57,7 @@ interface HeadInfo {
  */
 export interface KVStorageOptions {
   /**
-   * Server endpoint URL (default: http://localhost:3000)
+   * Server endpoint URL (default: http://localhost:3000 for HTTP, https://localhost:3443 for HTTPS)
    */
   endpoint?: string;
   /**

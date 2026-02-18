@@ -44,8 +44,10 @@ docker run -d --name kv-storage -p 3000:3000 \
   -v kv-data:/data \
   ghcr.io/denisix/kv-storage:latest
 
-# With TLS support
-docker run -d --name kv-storage -p 3000:3000 \
+# With TLS support (runs HTTP + HTTPS servers)
+docker run -d --name kv-storage \
+  -p 3000:3000 \
+  -p 3443:3443 \
   -e TOKEN=your-secret-token \
   -e SSL_CERT=/certs/cert.pem \
   -e SSL_KEY=/certs/key.pem \
@@ -209,16 +211,39 @@ Exported metrics:
 |----------|---------|-------------|
 | `TOKEN` | *required* | Authentication token |
 | `DB_PATH` | `./kv_db` | Database storage path |
-| `BIND_ADDR` | `0.0.0.0:3000` | Server bind address |
+| `PORT` | `3000` | HTTP/2 cleartext (h2c) port |
+| `SSL_PORT` | `3443` | HTTPS port (only when SSL_CERT/SSL_KEY set) |
+| `HOST` | `0.0.0.0` | Host to bind servers to |
+| `BIND_ADDR` | `0.0.0.0:3000` | Legacy: host:port (PORT extracts from here if set) |
 | `COMPRESSION_LEVEL` | `1` | Zstd level: 0 = off, 1-9 = compression |
-| `SSL_CERT` | *unset* | Path to PEM certificate file (enables TLS) |
-| `SSL_KEY` | *unset* | Path to PEM private key file (enables TLS) |
+| `SSL_CERT` | *unset* | Path to PEM certificate file (enables HTTPS) |
+| `SSL_KEY` | *unset* | Path to PEM private key file (enables HTTPS) |
 | `KV_CACHE_CAPACITY` | `1073741824` | Sled cache size in bytes (1GB) |
 | `KV_FLUSH_INTERVAL_MS` | `1000` | Sled flush interval in ms |
 
 ## TLS/SSL
 
-The server supports TLS/SSL for encrypted HTTP/2 connections. When both `SSL_CERT` and `SSL_KEY` are set, the server accepts HTTPS connections with ALPN h2 negotiation.
+The server supports running both HTTP (h2c) and HTTPS (h2) simultaneously. When `SSL_CERT` and `SSL_KEY` are set, the HTTPS server starts on `SSL_PORT` alongside the HTTP server on `PORT`.
+
+### HTTP Only (default)
+
+```bash
+export TOKEN="your-secret-token"
+cargo run --release
+# Listens on http://0.0.0.0:3000
+```
+
+### HTTP + HTTPS (both servers)
+
+```bash
+export TOKEN="your-secret-token"
+export SSL_CERT="/path/to/cert.pem"
+export SSL_KEY="/path/to/key.pem"
+export SSL_PORT="443"  # Optional, defaults to 3443
+cargo run --release
+# Listens on http://0.0.0.0:3000 (h2c)
+# AND https://0.0.0.0:443 (h2)
+```
 
 ### Generating a Self-Signed Certificate
 
@@ -227,22 +252,6 @@ For testing, generate a self-signed certificate:
 ```bash
 openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
 ```
-
-### Running with TLS
-
-```bash
-# Set both SSL_CERT and SSL_KEY to enable TLS
-export SSL_CERT="/path/to/cert.pem"
-export SSL_KEY="/path/to/key.pem"
-export TOKEN="your-secret-token"
-
-cargo run --release
-```
-
-When TLS is enabled:
-- The server listens for HTTPS connections on `BIND_ADDR`
-- HTTP/2 is negotiated via ALPN (h2)
-- Plaintext h2c connections are not accepted
 
 ### Using curl with HTTPS
 

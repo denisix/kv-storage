@@ -183,7 +183,8 @@ let client = Client::with_config(config)?;
 use kv_storage_client::Client;
 
 // Uses system CA certificates for verification
-let client = Client::new("https://example.com:3000", "your-token")?;
+// Default server HTTPS port is 3443
+let client = Client::new("https://example.com:3443", "your-token")?;
 ```
 
 ### Self-Signed Certificates
@@ -213,11 +214,12 @@ For enhanced security with self-signed or custom certificates:
 use kv_storage_client::{Client, ClientConfig};
 
 let config = ClientConfig {
-    endpoint: "https://localhost:3000".to_string(),
+    endpoint: "https://localhost:3443".to_string(),  // Default HTTPS port
     token: "your-token".to_string(),
     ssl_fingerprint: Some(
-        "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:\
-         AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89".to_string()
+        "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:"
+         "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:"
+         "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89".to_string()
     ),
     ..Default::default()
 };
